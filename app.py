@@ -15,17 +15,29 @@ from reportlab.lib import colors
 
 from core.models import Assumptions
 from core.engine import run_appraisal, sensitivity_grid
-from data.db import init_db, list_projects, create_project, list_appraisals, save_appraisal, load_appraisal
+from data.db import (
+    init_db,
+    list_projects,
+    create_project,
+    list_appraisals,
+    save_appraisal,
+    load_appraisal,
+)
 
 
+# ----------------------------
+# Formatting helpers
+# ----------------------------
 def money(x: float, ccy: str) -> str:
     try:
         return f"{ccy} {x:,.0f}"
     except Exception:
         return f"{ccy} {x}"
 
+
 def pct(x: float) -> str:
     return f"{x*100:.1f}%"
+
 
 def fmt_audit(v, unit: str, ccy: str) -> str:
     if unit == "ratio":
@@ -34,6 +46,10 @@ def fmt_audit(v, unit: str, ccy: str) -> str:
         return money(float(v), ccy)
     return str(v)
 
+
+# ----------------------------
+# KPI tiles
+# ----------------------------
 def kpis(out):
     ccy = out.currency
     a1, a2, a3, a4 = st.columns(4)
@@ -48,16 +64,46 @@ def kpis(out):
     b3.metric("Friction (net)", money(out.friction_net, ccy))
     b4.metric("Finance", money(out.finance_costs, ccy))
 
+    # ✅ Term debt / refi highlights
+    c1, c2, c3 = st.columns(3)
+    rm = getattr(out, "refinance_month", -1)
+    tla = getattr(out, "term_loan_amount", 0.0)
+    dscr = getattr(out, "term_dscr_at_refi", None)
+
+    c1.metric("Refinance month", "-" if rm is None or int(rm) < 0 else str(int(rm) + 1))  # display as 1-index
+    c2.metric("Term loan (sized)", "-" if tla is None else money(float(tla), ccy))
+    c3.metric("Term DSCR @ refi", "-" if dscr is None else f"{float(dscr):.2f}x")
+
+
+# ----------------------------
+# PDF report
+# ----------------------------
 def build_pdf(project_name: str, project_location: str, a: Assumptions, out) -> bytes:
     ccy = out.currency
     styles = getSampleStyleSheet()
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(buf, pagesize=A4, leftMargin=16*mm, rightMargin=16*mm, topMargin=14*mm, bottomMargin=14*mm)
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=A4,
+        leftMargin=16 * mm,
+        rightMargin=16 * mm,
+        topMargin=14 * mm,
+        bottomMargin=14 * mm,
+    )
 
     story = []
     story.append(Paragraph(f"Feasibility Report — {project_name}", styles["Title"]))
-    story.append(Paragraph(f"{project_location or ''} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}", styles["Normal"]))
+    story.append(
+        Paragraph(
+            f"{project_location or ''} | Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            styles["Normal"],
+        )
+    )
     story.append(Spacer(1, 10))
+
+    rm = getattr(out, "refinance_month", -1)
+    tla = getattr(out, "term_loan_amount", 0.0)
+    dscr = getattr(out, "term_dscr_at_refi", None)
 
     summary = [
         ["Metric", "Value"],
@@ -71,16 +117,24 @@ def build_pdf(project_name: str, project_location: str, a: Assumptions, out) -> 
         ["Peak debt", money(out.peak_debt, ccy)],
         ["VAT net settlement total", money(out.vat_net_payable_total, ccy)],
         ["Presales gate month", str(out.presales_gate_month)],
+        ["Refinance month", "-" if rm is None or int(rm) < 0 else str(int(rm) + 1)],
+        ["Term loan amount", "-" if tla is None else money(float(tla), ccy)],
+        ["Term DSCR @ refi", "-" if dscr is None else f"{float(dscr):.2f}x"],
     ]
-    t = Table(summary, colWidths=[70*mm, 100*mm])
-    t.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#111827")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#D1D5DB")),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
-        ("PADDING", (0,0), (-1,-1), 6),
-    ]))
+
+    t = Table(summary, colWidths=[70 * mm, 100 * mm])
+    t.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D1D5DB")),
+                ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.whitesmoke, colors.lightgrey]),
+                ("PADDING", (0, 0), (-1, -1), 6),
+            ]
+        )
+    )
     story.append(Paragraph("Summary", styles["Heading2"]))
     story.append(t)
     story.append(Spacer(1, 12))
@@ -94,17 +148,18 @@ def build_pdf(project_name: str, project_location: str, a: Assumptions, out) -> 
             row = []
             for c in cols:
                 v = r[c]
-                if c.lower().endswith("(net)") or c.lower().endswith("(gross)") or "value" in c.lower() or "gdv" in c.lower() or "build" in c.lower() or "noi" in c.lower():
+                cl = c.lower()
+                if cl.endswith("(net)") or cl.endswith("(gross)") or "value" in cl or "gdv" in cl or "build" in cl or "noi" in cl:
                     try:
                         row.append(money(float(v), ccy))
                     except Exception:
                         row.append(str(v))
-                elif "sqm" in c.lower():
+                elif "sqm" in cl:
                     try:
                         row.append(f"{float(v):,.0f}")
                     except Exception:
                         row.append(str(v))
-                elif "cap" in c.lower() or "ratio" in c.lower() or "vacancy" in c.lower() or "opex" in c.lower() or "share" in c.lower():
+                elif "cap" in cl or "ratio" in cl or "vacancy" in cl or "opex" in cl or "share" in cl:
                     try:
                         row.append(pct(float(v)))
                     except Exception:
@@ -112,34 +167,44 @@ def build_pdf(project_name: str, project_location: str, a: Assumptions, out) -> 
                 else:
                     row.append(str(v))
             table.append(row)
+
         pt = Table(table, repeatRows=1)
-        pt.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#111827")),
-            ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-            ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-            ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#D1D5DB")),
-            ("FONTSIZE", (0,0), (-1,-1), 7),
-            ("PADDING", (0,0), (-1,-1), 4),
-        ]))
+        pt.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                    ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D1D5DB")),
+                    ("FONTSIZE", (0, 0), (-1, -1), 7),
+                    ("PADDING", (0, 0), (-1, -1), 4),
+                ]
+            )
+        )
         story.append(Paragraph("Product mix", styles["Heading2"]))
         story.append(pt)
         story.append(Spacer(1, 12))
 
-    # Audit
+    # Audit (key lines)
     story.append(Paragraph("Audit trail (key lines)", styles["Heading2"]))
-    dfa = pd.DataFrame(out.audit).head(60)
+    dfa = pd.DataFrame(out.audit).head(80)
     table = [["Section", "Key", "Value"]]
     for _, r in dfa.iterrows():
         table.append([str(r["section"]), str(r["key"]), fmt_audit(r["value"], str(r.get("unit") or ""), ccy)])
-    au = Table(table, repeatRows=1, colWidths=[25*mm, 80*mm, 65*mm])
-    au.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#111827")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#D1D5DB")),
-        ("FONTSIZE", (0,0), (-1,-1), 8),
-        ("PADDING", (0,0), (-1,-1), 4),
-    ]))
+
+    au = Table(table, repeatRows=1, colWidths=[25 * mm, 80 * mm, 65 * mm])
+    au.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#111827")),
+                ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#D1D5DB")),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("PADDING", (0, 0), (-1, -1), 4),
+            ]
+        )
+    )
     story.append(au)
 
     doc.build(story)
@@ -153,7 +218,7 @@ st.set_page_config(page_title="SA Feasibility (Sale + BTL)", layout="wide")
 init_db()
 
 st.title("SA-Style Development Feasibility — Sale + BTL")
-st.caption("Sale products + Rental/Yield products • IH overlay • Heritage overlay • VAT • Bank constraints")
+st.caption("Sale products + Rental/Yield products • IH overlay • Heritage overlay • VAT • Bank constraints • Term debt / DSCR refi")
 
 with st.sidebar:
     st.header("Projects")
@@ -206,15 +271,20 @@ with left:
     for idx, ph in enumerate(phases):
         with st.expander(f"{idx+1}) {ph.get('name','Phase')}", expanded=(idx == 0)):
             c1, c2, c3, c4 = st.columns(4)
-            ph["name"] = c1.text_input("Name", value=str(ph.get("name","Phase")), key=f"ph_name_{idx}")
+            ph["name"] = c1.text_input("Name", value=str(ph.get("name", "Phase")), key=f"ph_name_{idx}")
             ph["start_month"] = int(c2.number_input("Start month (0=now)", 0, 240, int(ph.get("start_month", 0)), key=f"ph_start_{idx}"))
             ph["build_months"] = int(c3.number_input("Build months", 1, 120, int(ph.get("build_months", 18)), key=f"ph_build_{idx}"))
             ph["sales_months"] = int(c4.number_input("Sales months (sale products)", 1, 120, int(ph.get("sales_months", 12)), key=f"ph_sales_{idx}"))
-            ph["sales_curve"] = st.selectbox("Sales curve", ["linear","front","back"], index=["linear","front","back"].index(str(ph.get("sales_curve","linear"))), key=f"ph_curve_{idx}")
+            ph["sales_curve"] = st.selectbox(
+                "Sales curve",
+                ["linear", "front", "back"],
+                index=["linear", "front", "back"].index(str(ph.get("sales_curve", "linear"))),
+                key=f"ph_curve_{idx}",
+            )
 
             d1, d2 = st.columns(2)
             if d1.button("Duplicate phase", key=f"ph_dup_{idx}"):
-                phases.insert(idx+1, dict(ph))
+                phases.insert(idx + 1, dict(ph))
                 st.session_state.assumptions_dict["phases"] = phases
                 st.rerun()
             if d2.button("Delete phase", key=f"ph_del_{idx}") and len(phases) > 1:
@@ -235,9 +305,19 @@ with left:
     for i, p in enumerate(prods):
         with st.expander(f"{i+1}) {p.get('name','Product')}", expanded=(i == 0)):
             r1, r2, r3 = st.columns([0.45, 0.30, 0.25])
-            p["name"] = r1.text_input("Name", value=str(p.get("name","Product")), key=f"p_name_{i}")
-            p["type"] = r2.selectbox("Type", ["residential_sale","commercial_sale","rental_yield"], index=["residential_sale","commercial_sale","rental_yield"].index(str(p.get("type","residential_sale"))), key=f"p_type_{i}")
-            p["phase"] = r3.selectbox("Phase", phase_names, index=phase_names.index(p.get("phase", phase_names[0])) if p.get("phase") in phase_names else 0, key=f"p_phase_{i}")
+            p["name"] = r1.text_input("Name", value=str(p.get("name", "Product")), key=f"p_name_{i}")
+            p["type"] = r2.selectbox(
+                "Type",
+                ["residential_sale", "commercial_sale", "rental_yield"],
+                index=["residential_sale", "commercial_sale", "rental_yield"].index(str(p.get("type", "residential_sale"))),
+                key=f"p_type_{i}",
+            )
+            p["phase"] = r3.selectbox(
+                "Phase",
+                phase_names,
+                index=phase_names.index(p.get("phase", phase_names[0])) if p.get("phase") in phase_names else 0,
+                key=f"p_phase_{i}",
+            )
 
             p["efficiency_ratio"] = st.slider("Efficiency (Net/GBA)", 0.70, 0.95, float(p.get("efficiency_ratio", 0.83)), 0.01, key=f"p_eff_{i}")
 
@@ -268,7 +348,7 @@ with left:
                 p["presales_pct"] = s4.slider("Bankable presales %", 0.0, 1.0, float(p.get("presales_pct", 0.0)), 0.05, key=f"p_pre_{i}")
                 p["presales_achieved_month"] = int(st.number_input("Presales achieved month", 0, 240, int(p.get("presales_achieved_month", 0)), 1, key=f"p_pre_m_{i}"))
 
-                p["ih_eligible"] = st.toggle("IH eligible (resi sale only)", value=bool(p.get("ih_eligible", p["type"]=="residential_sale")), key=f"p_ih_{i}")
+                p["ih_eligible"] = st.toggle("IH eligible (resi sale only)", value=bool(p.get("ih_eligible", p["type"] == "residential_sale")), key=f"p_ih_{i}")
 
             else:
                 st.markdown("**Rental / yield valuation (BTL / commercial hold)**")
@@ -288,7 +368,7 @@ with left:
 
             d1, d2 = st.columns(2)
             if d1.button("Duplicate line", key=f"p_dup_{i}"):
-                prods.insert(i+1, dict(p))
+                prods.insert(i + 1, dict(p))
                 st.session_state.assumptions_dict["products"] = prods
                 st.rerun()
             if d2.button("Delete line", key=f"p_del_{i}") and len(prods) > 1:
@@ -335,7 +415,7 @@ with left:
     st.markdown("### Land + friction")
     e1, e2, e3 = st.columns(3)
     a.land_price = float(e1.number_input("Land price (as entered)", 0.0, 1e12, float(a.land_price), 250_000.0))
-    a.land_treatment = e2.selectbox("Land treatment", ["transfer_duty", "vat_standard", "vat_zero"], index=["transfer_duty","vat_standard","vat_zero"].index(a.land_treatment))
+    a.land_treatment = e2.selectbox("Land treatment", ["transfer_duty", "vat_standard", "vat_zero"], index=["transfer_duty", "vat_standard", "vat_zero"].index(a.land_treatment))
     a.solve_residual_land = e3.toggle("Solve residual land to hit target", value=bool(a.solve_residual_land))
 
     f1, f2 = st.columns(2)
@@ -379,6 +459,20 @@ with left:
     a.arrangement_fee_rate = s2.slider("Arrangement fee (% peak debt)", 0.0, 0.05, float(a.arrangement_fee_rate), 0.001)
     a.exit_fee_rate = s3.slider("Exit fee (% peak debt)", 0.0, 0.05, float(a.exit_fee_rate), 0.001)
 
+    # ✅ TERM DEBT / DSCR CONTROLS (NEW)
+    st.markdown("### Term debt / DSCR (post-stabilisation refinance)")
+    t1, t2, t3, t4 = st.columns(4)
+    a.enable_term_debt = t1.toggle("Enable term debt", value=bool(getattr(a, "enable_term_debt", True)))
+    a.term_margin_over_prime = t2.slider("Term margin over prime", 0.0, 0.05, float(getattr(a, "term_margin_over_prime", 0.01)), 0.0025)
+    a.term_amort_years = int(t3.slider("Amortisation (years)", 5, 30, int(getattr(a, "term_amort_years", 15)), 1))
+    a.term_dscr_min = t4.slider("Min DSCR", 1.0, 2.0, float(getattr(a, "term_dscr_min", 1.25)), 0.05)
+
+    u1, u2, u3, u4 = st.columns(4)
+    a.term_max_ltv = u1.slider("Term max LTV", 0.30, 0.80, float(getattr(a, "term_max_ltv", 0.65)), 0.01)
+    a.refinance_at_stabilisation = u2.toggle("Refi at stabilisation", value=bool(getattr(a, "refinance_at_stabilisation", True)))
+    a.refinance_month_offset = int(u3.number_input("Refi offset (months)", 0, 36, int(getattr(a, "refinance_month_offset", 0)), 1))
+    a.allow_cash_out_refi = u4.toggle("Allow cash-out at refi", value=bool(getattr(a, "allow_cash_out_refi", False)))
+
     st.session_state.assumptions_dict = a.to_dict()
 
 with right:
@@ -391,39 +485,48 @@ with right:
     if not dfp.empty:
         ccy = out.currency
         show = dfp.copy()
-        # format common money columns if present
+
         money_cols = [c for c in show.columns if any(k in c.lower() for k in ["gdv", "build", "noi", "value", "rent /"])]
         for col in money_cols:
             try:
                 show[col] = show[col].astype(float).map(lambda v: money(v, ccy))
             except Exception:
                 pass
-        # sqm
+
         for col in [c for c in show.columns if "sqm" in c.lower()]:
             try:
                 show[col] = show[col].astype(float).map(lambda v: f"{v:,.0f}")
             except Exception:
                 pass
-        # ratios
-        for col in [c for c in show.columns if any(k in c.lower() for k in ["efficiency","share","vacancy","opex","cap"])]:
+
+        for col in [c for c in show.columns if any(k in c.lower() for k in ["efficiency", "share", "vacancy", "opex", "cap"])]:
             try:
                 show[col] = show[col].astype(float).map(pct)
             except Exception:
                 pass
+
         st.dataframe(show, use_container_width=True, hide_index=True)
 
     tabs = st.tabs(["Cashflow", "Sensitivity", "Scenarios & Compare", "Audit", "PDF"])
 
     with tabs[0]:
         df = pd.DataFrame(out.cashflow_rows)
-        st.caption("Cashflow includes sale receipts, rental receipts, exit value, VAT settlement timing, and constrained debt draws.")
+        st.caption("Cashflow includes sale receipts, rental receipts, exit value, VAT settlement timing, constrained debt draws, and term-debt service after refi.")
+
+        # --- Revenue/Costs/VAT/Term debt service
         fig = go.Figure()
         fig.add_trace(go.Bar(x=df["Month"], y=df["Revenue (gross)"], name="Revenue (gross)"))
         fig.add_trace(go.Bar(x=df["Month"], y=-df["Costs (gross incl VAT)"], name="-Costs (gross)"))
         fig.add_trace(go.Bar(x=df["Month"], y=-df["VAT settlement (+pay / -refund)"], name="-VAT settlement"))
+
+        # ✅ New line: term debt service (cash)
+        if "Debt service (term)" in df.columns:
+            fig.add_trace(go.Bar(x=df["Month"], y=-df["Debt service (term)"], name="-Debt service (term)"))
+
         fig.update_layout(barmode="relative", height=320, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
+        # --- Debt / equity
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(x=df["Month"], y=df["Debt balance"], name="Debt balance", mode="lines"))
         fig2.add_trace(go.Bar(x=df["Month"], y=df["Debt draw"], name="Debt draw"))
@@ -436,12 +539,14 @@ with right:
 
     with tabs[1]:
         rows, cols, mat = sensitivity_grid(a)
-        heat = go.Figure(data=go.Heatmap(
-            z=mat,
-            x=cols,
-            y=rows,
-            hovertemplate="Price/Rent: %{y}<br>Cost: %{x}<br>Value: %{z:,.0f}<extra></extra>"
-        ))
+        heat = go.Figure(
+            data=go.Heatmap(
+                z=mat,
+                x=cols,
+                y=rows,
+                hovertemplate="Price/Rent: %{y}<br>Cost: %{x}<br>Value: %{z:,.0f}<extra></extra>",
+            )
+        )
         heat.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(heat, use_container_width=True)
 
@@ -453,11 +558,14 @@ with right:
         st.caption("Save Base / Offer / Bank cases, then compare side-by-side.")
         c1, c2, c3 = st.columns(3)
         if c1.button("💾 Save as Base", use_container_width=True):
-            save_appraisal(project_id, "Base", a.to_dict(), out.headline()); st.rerun()
+            save_appraisal(project_id, "Base", a.to_dict(), out.headline())
+            st.rerun()
         if c2.button("💾 Save as Offer", use_container_width=True):
-            save_appraisal(project_id, "Offer", a.to_dict(), out.headline()); st.rerun()
+            save_appraisal(project_id, "Offer", a.to_dict(), out.headline())
+            st.rerun()
         if c3.button("💾 Save as Bank", use_container_width=True):
-            save_appraisal(project_id, "Bank", a.to_dict(), out.headline()); st.rerun()
+            save_appraisal(project_id, "Bank", a.to_dict(), out.headline())
+            st.rerun()
 
         st.divider()
         apps = list_appraisals(project_id)
@@ -466,10 +574,11 @@ with right:
         else:
             labels = {x["id"]: f"#{x['id']} — {x['version_name']} ({x['created_at']})" for x in apps}
             ids = list(labels.keys())
-            a1, a2, a3 = st.columns(3)
-            pickA = a1.selectbox("Compare A", ids, format_func=lambda k: labels[k])
-            pickB = a2.selectbox("Compare B", ids, format_func=lambda k: labels[k], index=min(1, len(ids)-1))
-            pickC = a3.selectbox("Compare C", ids, format_func=lambda k: labels[k], index=min(2, len(ids)-1))
+
+            a1c, a2c, a3c = st.columns(3)
+            pickA = a1c.selectbox("Compare A", ids, format_func=lambda k: labels[k])
+            pickB = a2c.selectbox("Compare B", ids, format_func=lambda k: labels[k], index=min(1, len(ids) - 1))
+            pickC = a3c.selectbox("Compare C", ids, format_func=lambda k: labels[k], index=min(2, len(ids) - 1))
 
             def load_recalc(app_id):
                 loaded = load_appraisal(int(app_id))
@@ -484,40 +593,52 @@ with right:
                 res = load_recalc(pid)
                 if res:
                     label, oo = res
-                    rows_.append({
-                        "Slot": slot,
-                        "Version": label,
-                        "Revenue (net)": oo.gdv_net,
-                        "Profit (net)": oo.profit_net,
-                        "Profit % Cost": oo.profit_on_cost,
-                        "Peak debt": oo.peak_debt,
-                        "Equity IRR p.a.": oo.equity_irr_pa,
-                        "VAT total": oo.vat_net_payable_total,
-                        "Presales gate month": oo.presales_gate_month,
-                    })
+                    rows_.append(
+                        {
+                            "Slot": slot,
+                            "Version": label,
+                            "Revenue (net)": oo.gdv_net,
+                            "Profit (net)": oo.profit_net,
+                            "Profit % Cost": oo.profit_on_cost,
+                            "Peak debt": oo.peak_debt,
+                            "Equity IRR p.a.": oo.equity_irr_pa,
+                            "VAT total": oo.vat_net_payable_total,
+                            "Presales gate month": oo.presales_gate_month,
+                            # ✅ term debt fields
+                            "Refi month": getattr(oo, "refinance_month", -1),
+                            "Term loan": getattr(oo, "term_loan_amount", 0.0),
+                            "Term DSCR": getattr(oo, "term_dscr_at_refi", None),
+                        }
+                    )
 
             dfc = pd.DataFrame(rows_)
             if not dfc.empty:
                 ccy = out.currency
                 show = dfc.copy()
-                for col in ["Revenue (net)", "Profit (net)", "Peak debt", "VAT total"]:
+                for col in ["Revenue (net)", "Profit (net)", "Peak debt", "VAT total", "Term loan"]:
                     show[col] = show[col].astype(float).map(lambda v: money(v, ccy))
+
                 show["Profit % Cost"] = show["Profit % Cost"].astype(float).map(pct)
                 show["Equity IRR p.a."] = show["Equity IRR p.a."].apply(lambda v: "-" if v is None else pct(float(v)))
+
+                # display month as 1-index or "-"
+                show["Refi month"] = show["Refi month"].apply(lambda v: "-" if v is None or int(v) < 0 else str(int(v) + 1))
+                show["Term DSCR"] = show["Term DSCR"].apply(lambda v: "-" if v is None else f"{float(v):.2f}x")
+
                 st.dataframe(show, use_container_width=True, hide_index=True)
 
     with tabs[3]:
         ccy = out.currency
         dfa = pd.DataFrame(out.audit)
         dfa["Display"] = dfa.apply(lambda r: fmt_audit(r["value"], str(r.get("unit") or ""), ccy), axis=1)
-        st.dataframe(dfa[["section","key","Display"]], use_container_width=True, hide_index=True)
+        st.dataframe(dfa[["section", "key", "Display"]], use_container_width=True, hide_index=True)
 
     with tabs[4]:
         pdf = build_pdf(project["name"], project.get("location") or "", a, out)
         st.download_button(
             "📄 Download PDF report",
             data=pdf,
-            file_name=f"feasibility_{project['name'].replace(' ','_')}.pdf",
+            file_name=f"feasibility_{project['name'].replace(' ', '_')}.pdf",
             mime="application/pdf",
             use_container_width=True,
         )
