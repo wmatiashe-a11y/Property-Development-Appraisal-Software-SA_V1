@@ -137,14 +137,21 @@ class Assumptions:
 
     # ✅ Term debt / DSCR (post-stabilisation refinance)
     enable_term_debt: bool = True
-    term_margin_over_prime: float = 0.010          # Prime + 1.0% typical “term”
-    term_amort_years: int = 15                     # 10–20 yrs common
-    term_dscr_min: float = 1.25                    # DSCR covenant
-    term_max_ltv: float = 0.65                     # term LTV cap against value
-    refinance_at_stabilisation: bool = True        # refi month = end of letting-up (default)
-    refinance_month_offset: int = 0                # extra months after stabilisation
-    allow_cash_out_refi: bool = False              # conservative default: no cash-out
+    term_margin_over_prime: float = 0.010
+    term_amort_years: int = 15
+    term_dscr_min: float = 1.25
+    term_max_ltv: float = 0.65
+    refinance_at_stabilisation: bool = True
+    refinance_month_offset: int = 0
+    allow_cash_out_refi: bool = False
 
+    # ✅ NEW: term IO + DSCR NOI basis
+    term_io_months: int = 0  # e.g., 12–24 months interest-only after refinance
+    term_dscr_noi_basis: str = "stabilised_month_annualised"
+    # options:
+    #   - "steady_state_annual" (existing behaviour)
+    #   - "stabilised_month_annualised" (NEW default)
+    
     # Residual land
     solve_residual_land: bool = False
 
