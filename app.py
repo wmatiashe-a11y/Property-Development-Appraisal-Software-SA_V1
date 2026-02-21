@@ -38,7 +38,7 @@ def kpis(out):
     ccy = out.currency
     a1, a2, a3, a4 = st.columns(4)
     a1.metric("Profit (net)", money(out.profit_net, ccy), pct(out.profit_on_cost))
-    a2.metric("GDV (net)", money(out.gdv_net, ccy))
+    a2.metric("Total revenue (net)", money(out.gdv_net, ccy))
     a3.metric("Peak debt", money(out.peak_debt, ccy))
     a4.metric("Equity IRR p.a.", "-" if out.equity_irr_pa is None else pct(out.equity_irr_pa))
 
@@ -61,7 +61,7 @@ def build_pdf(project_name: str, project_location: str, a: Assumptions, out) -> 
 
     summary = [
         ["Metric", "Value"],
-        ["GDV (net)", money(out.gdv_net, ccy)],
+        ["Total revenue (net)", money(out.gdv_net, ccy)],
         ["Costs (net ex land/fin)", money(out.costs_net_ex_land_ex_fin, ccy)],
         ["Land (net)", money(out.land_net, ccy)],
         ["Friction (net)", money(out.friction_net, ccy)],
@@ -94,12 +94,21 @@ def build_pdf(project_name: str, project_location: str, a: Assumptions, out) -> 
             row = []
             for c in cols:
                 v = r[c]
-                if c in ["GDV gross", "GDV net", "Build net", "Price / Net sqm", "Build / GBA sqm"]:
-                    row.append(money(float(v), ccy))
-                elif c in ["Net sqm", "GBA sqm"]:
-                    row.append(f"{float(v):,.0f}")
-                elif c in ["Efficiency", "Off-plan share", "Presales %"]:
-                    row.append(pct(float(v)))
+                if c.lower().endswith("(net)") or c.lower().endswith("(gross)") or "value" in c.lower() or "gdv" in c.lower() or "build" in c.lower() or "noi" in c.lower():
+                    try:
+                        row.append(money(float(v), ccy))
+                    except Exception:
+                        row.append(str(v))
+                elif "sqm" in c.lower():
+                    try:
+                        row.append(f"{float(v):,.0f}")
+                    except Exception:
+                        row.append(str(v))
+                elif "cap" in c.lower() or "ratio" in c.lower() or "vacancy" in c.lower() or "opex" in c.lower() or "share" in c.lower():
+                    try:
+                        row.append(pct(float(v)))
+                    except Exception:
+                        row.append(str(v))
                 else:
                     row.append(str(v))
             table.append(row)
@@ -109,53 +118,16 @@ def build_pdf(project_name: str, project_location: str, a: Assumptions, out) -> 
             ("TEXTCOLOR", (0,0), (-1,0), colors.white),
             ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
             ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#D1D5DB")),
-            ("FONTSIZE", (0,0), (-1,-1), 8),
+            ("FONTSIZE", (0,0), (-1,-1), 7),
             ("PADDING", (0,0), (-1,-1), 4),
         ]))
         story.append(Paragraph("Product mix", styles["Heading2"]))
         story.append(pt)
         story.append(Spacer(1, 12))
 
-    # Key assumptions
-    story.append(Paragraph("Key assumptions", styles["Heading2"]))
-    vat = a.vat or {}
-    key = [
-        ["VAT enabled", str(vat.get("enabled", True))],
-        ["VAT rate", pct(float(vat.get("vat_rate", 0.15)))],
-        ["Prices include VAT", str(vat.get("prices_include_vat", True))],
-        ["Costs include VAT", str(vat.get("costs_include_vat", False))],
-        ["Input VAT recoverable", str(vat.get("input_vat_recoverable", True))],
-        ["VAT settlement lag (months)", str(vat.get("settlement_lag_months", 1))],
-        ["Land treatment", a.land_treatment],
-        ["Land price (entered)", money(a.land_price, ccy)],
-        ["Legal conveyancing", money(a.legal_conveyancing, ccy)],
-        ["Other land disbursements", money(a.land_other_disbursements, ccy)],
-        ["Target profit basis", a.target_profit_basis.upper()],
-        ["Target profit rate", pct(a.target_profit_rate)],
-        ["Prime p.a.", pct(a.prime_rate_pa)],
-        ["Debt margin over prime", pct(a.debt_margin_over_prime)],
-        ["Max LTC", pct(a.max_ltc)],
-        ["Max LTV", pct(a.max_ltv)],
-        ["Min equity", pct(a.min_equity_pct)],
-        ["Presales required (resi)", pct(a.presales_required_pct_resi)],
-        ["Interest-only during build", str(a.debt_interest_only_during_build)],
-    ]
-    at = Table([["Assumption", "Value"]] + key, colWidths=[70*mm, 100*mm])
-    at.setStyle(TableStyle([
-        ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#111827")),
-        ("TEXTCOLOR", (0,0), (-1,0), colors.white),
-        ("FONTNAME", (0,0), (-1,0), "Helvetica-Bold"),
-        ("GRID", (0,0), (-1,-1), 0.25, colors.HexColor("#D1D5DB")),
-        ("FONTSIZE", (0,0), (-1,-1), 9),
-        ("PADDING", (0,0), (-1,-1), 5),
-        ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
-    ]))
-    story.append(at)
-    story.append(Spacer(1, 12))
-
-    # Audit (trim)
+    # Audit
     story.append(Paragraph("Audit trail (key lines)", styles["Heading2"]))
-    dfa = pd.DataFrame(out.audit).head(55)
+    dfa = pd.DataFrame(out.audit).head(60)
     table = [["Section", "Key", "Value"]]
     for _, r in dfa.iterrows():
         table.append([str(r["section"]), str(r["key"]), fmt_audit(r["value"], str(r.get("unit") or ""), ccy)])
@@ -177,11 +149,11 @@ def build_pdf(project_name: str, project_location: str, a: Assumptions, out) -> 
 # ----------------------------
 # App
 # ----------------------------
-st.set_page_config(page_title="SA Feasibility (Bankable MVP)", layout="wide")
+st.set_page_config(page_title="SA Feasibility (Sale + BTL)", layout="wide")
 init_db()
 
-st.title("SA-Style Development Feasibility — Bankable MVP")
-st.caption("VAT • Transfer duty & legal friction • Phasing • Off-plan vs completion • Presales gate • LTC/LTV constraints • Interest-only during build")
+st.title("SA-Style Development Feasibility — Sale + BTL")
+st.caption("Sale products + Rental/Yield products • IH overlay • Heritage overlay • VAT • Bank constraints")
 
 with st.sidebar:
     st.header("Projects")
@@ -228,7 +200,7 @@ left, right = st.columns([0.56, 0.44], gap="large")
 with left:
     st.subheader("Inputs")
 
-    # PHASES
+    # --------- PHASES ----------
     st.markdown("### Phasing")
     phases = list(a.phases or [])
     for idx, ph in enumerate(phases):
@@ -237,7 +209,7 @@ with left:
             ph["name"] = c1.text_input("Name", value=str(ph.get("name","Phase")), key=f"ph_name_{idx}")
             ph["start_month"] = int(c2.number_input("Start month (0=now)", 0, 240, int(ph.get("start_month", 0)), key=f"ph_start_{idx}"))
             ph["build_months"] = int(c3.number_input("Build months", 1, 120, int(ph.get("build_months", 18)), key=f"ph_build_{idx}"))
-            ph["sales_months"] = int(c4.number_input("Sales months", 1, 120, int(ph.get("sales_months", 12)), key=f"ph_sales_{idx}"))
+            ph["sales_months"] = int(c4.number_input("Sales months (sale products)", 1, 120, int(ph.get("sales_months", 12)), key=f"ph_sales_{idx}"))
             ph["sales_curve"] = st.selectbox("Sales curve", ["linear","front","back"], index=["linear","front","back"].index(str(ph.get("sales_curve","linear"))), key=f"ph_curve_{idx}")
 
             d1, d2 = st.columns(2)
@@ -249,27 +221,28 @@ with left:
                 phases.pop(idx)
                 st.session_state.assumptions_dict["phases"] = phases
                 st.rerun()
+
     if st.button("➕ Add phase", use_container_width=True):
         phases.append({"name": f"Phase {len(phases)+1}", "start_month": 0, "build_months": 18, "sales_months": 12, "sales_curve": "linear"})
         st.session_state.assumptions_dict["phases"] = phases
         st.rerun()
     a.phases = phases
-
     phase_names = [str(p.get("name")) for p in a.phases]
 
-    # PRODUCTS
-    st.markdown("### Product mix (NSA/NLA revenue, GBA build costs)")
+    # --------- PRODUCT MIX ----------
+    st.markdown("### Product mix")
     prods = list(a.products or [])
     for i, p in enumerate(prods):
         with st.expander(f"{i+1}) {p.get('name','Product')}", expanded=(i == 0)):
             r1, r2, r3 = st.columns([0.45, 0.30, 0.25])
             p["name"] = r1.text_input("Name", value=str(p.get("name","Product")), key=f"p_name_{i}")
-            p["type"] = r2.selectbox("Type", ["residential_sale","commercial_sale"], index=0 if str(p.get("type","")).startswith("residential") else 1, key=f"p_type_{i}")
+            p["type"] = r2.selectbox("Type", ["residential_sale","commercial_sale","rental_yield"], index=["residential_sale","commercial_sale","rental_yield"].index(str(p.get("type","residential_sale"))), key=f"p_type_{i}")
             p["phase"] = r3.selectbox("Phase", phase_names, index=phase_names.index(p.get("phase", phase_names[0])) if p.get("phase") in phase_names else 0, key=f"p_phase_{i}")
 
             p["efficiency_ratio"] = st.slider("Efficiency (Net/GBA)", 0.70, 0.95, float(p.get("efficiency_ratio", 0.83)), 0.01, key=f"p_eff_{i}")
 
-            if str(p["type"]).startswith("residential"):
+            is_res = (p["type"] == "residential_sale")
+            if is_res:
                 c1, c2, c3 = st.columns(3)
                 p["units"] = int(c1.number_input("Units", 0, 5000, int(p.get("units", 0)), 1, key=f"p_units_{i}"))
                 p["avg_unit_net_sqm"] = float(c2.number_input("Avg unit NSA (m²)", 0.0, 500.0, float(p.get("avg_unit_net_sqm", 0.0)), 1.0, key=f"p_avg_{i}"))
@@ -277,21 +250,41 @@ with left:
                 c3.metric("Computed Net sqm", f"{net:,.0f}")
                 p["net_sqm"] = None
             else:
-                p["net_sqm"] = float(st.number_input("Net let/sale area (m²)", 0.0, 1e9, float(p.get("net_sqm", 0.0)), 10.0, key=f"p_net_{i}"))
-                p["units"] = 0
-                p["avg_unit_net_sqm"] = 0.0
+                p["net_sqm"] = float(st.number_input("Net area (m²)", 0.0, 1e9, float(p.get("net_sqm", 0.0)), 10.0, key=f"p_net_{i}"))
+                p["units"] = int(p.get("units") or 0)
+                p["avg_unit_net_sqm"] = float(p.get("avg_unit_net_sqm") or 0.0)
 
-            k1, k2 = st.columns(2)
-            p["sale_price_per_net_sqm"] = float(k1.number_input("Sale price per NET sqm (as entered)", 0.0, 1e9, float(p.get("sale_price_per_net_sqm", 0.0)), 500.0, key=f"p_price_{i}"))
-            p["build_cost_per_gba_sqm"] = float(k2.number_input("Build cost per GBA sqm (as entered)", 0.0, 1e9, float(p.get("build_cost_per_gba_sqm", 0.0)), 500.0, key=f"p_cost_{i}"))
+            p["build_cost_per_gba_sqm"] = float(st.number_input("Build cost per GBA sqm", 0.0, 1e9, float(p.get("build_cost_per_gba_sqm", 0.0)), 500.0, key=f"p_cost_{i}"))
 
-            st.markdown("**Off-plan + presales (bankability)**")
-            s1, s2, s3, s4 = st.columns(4)
-            p["offplan_share"] = s1.slider("Off-plan share", 0.0, 1.0, float(p.get("offplan_share", 0.0)), 0.05, key=f"p_off_{i}")
-            p["deposit_pct"] = s2.slider("Deposit %", 0.0, 0.30, float(p.get("deposit_pct", 0.0)), 0.01, key=f"p_dep_{i}")
-            p["deposit_released_during_build"] = s3.toggle("Deposit released during build", value=bool(p.get("deposit_released_during_build", False)), key=f"p_dep_rel_{i}")
-            p["presales_pct"] = s4.slider("Bankable presales %", 0.0, 1.0, float(p.get("presales_pct", 0.0)), 0.05, key=f"p_pre_{i}")
-            p["presales_achieved_month"] = int(st.number_input("Presales achieved month (contracts signed)", 0, 240, int(p.get("presales_achieved_month", 0)), 1, key=f"p_pre_m_{i}"))
+            if p["type"] in ("residential_sale", "commercial_sale"):
+                st.markdown("**Sale assumptions**")
+                p["sale_price_per_net_sqm"] = float(st.number_input("Sale price per NET sqm", 0.0, 1e9, float(p.get("sale_price_per_net_sqm", 0.0)), 500.0, key=f"p_price_{i}"))
+
+                st.markdown("**Bankability / sales streams**")
+                s1, s2, s3, s4 = st.columns(4)
+                p["offplan_share"] = s1.slider("Off-plan share", 0.0, 1.0, float(p.get("offplan_share", 0.0)), 0.05, key=f"p_off_{i}")
+                p["deposit_pct"] = s2.slider("Deposit %", 0.0, 0.30, float(p.get("deposit_pct", 0.0)), 0.01, key=f"p_dep_{i}")
+                p["deposit_released_during_build"] = s3.toggle("Deposit released during build", value=bool(p.get("deposit_released_during_build", False)), key=f"p_dep_rel_{i}")
+                p["presales_pct"] = s4.slider("Bankable presales %", 0.0, 1.0, float(p.get("presales_pct", 0.0)), 0.05, key=f"p_pre_{i}")
+                p["presales_achieved_month"] = int(st.number_input("Presales achieved month", 0, 240, int(p.get("presales_achieved_month", 0)), 1, key=f"p_pre_m_{i}"))
+
+                p["ih_eligible"] = st.toggle("IH eligible (resi sale only)", value=bool(p.get("ih_eligible", p["type"]=="residential_sale")), key=f"p_ih_{i}")
+
+            else:
+                st.markdown("**Rental / yield valuation (BTL / commercial hold)**")
+                z1, z2, z3 = st.columns(3)
+                p["rent_per_net_sqm_month"] = float(z1.number_input("Rent per net sqm / month", 0.0, 1e9, float(p.get("rent_per_net_sqm_month", 0.0)), 5.0, key=f"p_rent_{i}"))
+                p["rent_is_vat_exclusive"] = z2.toggle("Rent + VAT (exclusive)", value=bool(p.get("rent_is_vat_exclusive", True)), key=f"p_rent_vat_{i}")
+                p["opex_ratio"] = z3.slider("Opex ratio (% of rent)", 0.0, 0.80, float(p.get("opex_ratio", 0.35)), 0.01, key=f"p_opex_{i}")
+
+                y1, y2, y3, y4 = st.columns(4)
+                p["vacancy_stabilized"] = y1.slider("Vacancy (stabilised)", 0.0, 0.30, float(p.get("vacancy_stabilized", 0.05)), 0.01, key=f"p_vac_{i}")
+                p["letting_up_months"] = int(y2.number_input("Letting-up months", 0, 60, int(p.get("letting_up_months", 12)), 1, key=f"p_let_{i}"))
+                p["hold_months_after_build"] = int(y3.number_input("Hold months after build", 0, 240, int(p.get("hold_months_after_build", 36)), 1, key=f"p_hold_{i}"))
+                p["exit_cap_rate"] = float(y4.slider("Exit cap rate", 0.03, 0.25, float(p.get("exit_cap_rate", 0.095)), 0.0025, key=f"p_cap_{i}"))
+
+                p["selling_cost_rate"] = float(st.slider("Selling costs (% of exit value)", 0.0, 0.08, float(p.get("selling_cost_rate", 0.02)), 0.0025, key=f"p_sell_{i}"))
+                p["ih_eligible"] = False
 
             d1, d2 = st.columns(2)
             if d1.button("Duplicate line", key=f"p_dup_{i}"):
@@ -309,18 +302,36 @@ with left:
         st.rerun()
     a.products = prods
 
+    # --------- OVERLAYS TABS ----------
+    st.markdown("### Overlays")
+    t_core, t_ih, t_herit = st.tabs(["Overview", "Inclusionary Housing", "Heritage"])
+
+    with t_core:
+        st.caption("Use the tabs to apply overlay assumptions that affect revenue (IH) and costs (Heritage).")
+
+    with t_ih:
+        a.inclusionary_enabled = st.toggle("Enable Inclusionary Housing overlay", value=bool(a.inclusionary_enabled))
+        a.inclusionary_rate = st.slider("IH % of eligible resi sale net area", 0.0, 0.30, float(a.inclusionary_rate), 0.01)
+        a.inclusionary_price_per_net_sqm = float(st.number_input("IH capped price per net sqm", 0.0, 1e9, float(a.inclusionary_price_per_net_sqm), 500.0))
+        st.caption("Applied only to product lines: **Type = residential_sale** with **IH eligible = True**.")
+
+    with t_herit:
+        a.heritage_enabled = st.toggle("Enable Heritage overlay", value=bool(a.heritage_enabled))
+        a.heritage_cost_uplift_rate = st.slider("Heritage uplift on build cost base", 0.0, 0.25, float(a.heritage_cost_uplift_rate), 0.01)
+
+    # --------- RISK / SOFT COSTS ----------
     st.markdown("### Risk & soft costs")
-    c1, c2, c3, c4 = st.columns(4)
+    c1, c2, c3 = st.columns(3)
     a.contingency_rate = c1.slider("Contingency", 0.0, 0.20, float(a.contingency_rate), 0.01)
     a.escalation_rate_pa = c2.slider("Escalation p.a.", 0.0, 0.20, float(a.escalation_rate_pa), 0.005)
     a.professional_fees_rate = c3.slider("Professional fees", 0.0, 0.25, float(a.professional_fees_rate), 0.01)
-    a.heritage_cost_uplift_rate = c4.slider("Heritage uplift on build", 0.0, 0.25, float(a.heritage_cost_uplift_rate), 0.01)
 
     d1, d2, d3 = st.columns(3)
     a.statutory_costs = float(d1.number_input("Statutory (lump sum)", 0.0, 1e12, float(a.statutory_costs), 50_000.0))
-    a.marketing_rate = d2.slider("Marketing (% of GDV net)", 0.0, 0.10, float(a.marketing_rate), 0.005)
+    a.marketing_rate = d2.slider("Marketing (% of sale GDV net)", 0.0, 0.10, float(a.marketing_rate), 0.005)
     a.overhead_per_month = float(d3.number_input("Overhead / month", 0.0, 1e12, float(a.overhead_per_month), 5_000.0))
 
+    # --------- LAND ----------
     st.markdown("### Land + friction")
     e1, e2, e3 = st.columns(3)
     a.land_price = float(e1.number_input("Land price (as entered)", 0.0, 1e12, float(a.land_price), 250_000.0))
@@ -331,22 +342,25 @@ with left:
     a.legal_conveyancing = float(f1.number_input("Legal / conveyancing", 0.0, 1e12, float(a.legal_conveyancing), 10_000.0))
     a.land_other_disbursements = float(f2.number_input("Other land disbursements", 0.0, 1e12, float(a.land_other_disbursements), 10_000.0))
 
+    # --------- VAT ----------
     st.markdown("### VAT")
     vat = dict(a.vat or {})
     v1, v2, v3, v4, v5 = st.columns(5)
     vat["enabled"] = v1.toggle("VAT enabled", value=bool(vat.get("enabled", True)))
     vat["vat_rate"] = v2.slider("VAT rate", 0.10, 0.20, float(vat.get("vat_rate", 0.15)), 0.005)
-    vat["prices_include_vat"] = v3.toggle("Prices include VAT", value=bool(vat.get("prices_include_vat", True)))
+    vat["prices_include_vat"] = v3.toggle("Sale prices include VAT", value=bool(vat.get("prices_include_vat", True)))
     vat["costs_include_vat"] = v4.toggle("Costs include VAT", value=bool(vat.get("costs_include_vat", False)))
     vat["input_vat_recoverable"] = v5.toggle("Input VAT recoverable", value=bool(vat.get("input_vat_recoverable", True)))
     vat["settlement_lag_months"] = int(st.slider("VAT settlement lag (months)", 0, 3, int(vat.get("settlement_lag_months", 1)), 1))
     a.vat = vat
 
+    # --------- PROFIT TARGET ----------
     st.markdown("### Profit target")
     p1, p2 = st.columns(2)
     a.target_profit_basis = p1.selectbox("Target basis", ["cost", "gdv"], index=0 if a.target_profit_basis == "cost" else 1)
     a.target_profit_rate = p2.slider("Target profit rate", 0.0, 0.35, float(a.target_profit_rate), 0.01)
 
+    # --------- FINANCE ----------
     st.markdown("### Finance constraints (bank-style)")
     q1, q2, q3, q4 = st.columns(4)
     a.use_debt = q1.toggle("Use debt", value=bool(a.use_debt))
@@ -376,24 +390,33 @@ with right:
     dfp = pd.DataFrame(out.product_rows)
     if not dfp.empty:
         ccy = out.currency
-        df_show = dfp.copy()
-        for col in ["Price / Net sqm", "GDV gross", "GDV net", "Build / GBA sqm", "Build net"]:
-            if col in df_show.columns:
-                df_show[col] = df_show[col].astype(float).map(lambda v: money(v, ccy))
-        for col in ["Net sqm", "GBA sqm"]:
-            if col in df_show.columns:
-                df_show[col] = df_show[col].astype(float).map(lambda v: f"{v:,.0f}")
-        for col in ["Efficiency", "Off-plan share", "Presales %"]:
-            if col in df_show.columns:
-                df_show[col] = df_show[col].astype(float).map(pct)
-        st.dataframe(df_show, use_container_width=True, hide_index=True)
+        show = dfp.copy()
+        # format common money columns if present
+        money_cols = [c for c in show.columns if any(k in c.lower() for k in ["gdv", "build", "noi", "value", "rent /"])]
+        for col in money_cols:
+            try:
+                show[col] = show[col].astype(float).map(lambda v: money(v, ccy))
+            except Exception:
+                pass
+        # sqm
+        for col in [c for c in show.columns if "sqm" in c.lower()]:
+            try:
+                show[col] = show[col].astype(float).map(lambda v: f"{v:,.0f}")
+            except Exception:
+                pass
+        # ratios
+        for col in [c for c in show.columns if any(k in c.lower() for k in ["efficiency","share","vacancy","opex","cap"])]:
+            try:
+                show[col] = show[col].astype(float).map(pct)
+            except Exception:
+                pass
+        st.dataframe(show, use_container_width=True, hide_index=True)
 
     tabs = st.tabs(["Cashflow", "Sensitivity", "Scenarios & Compare", "Audit", "PDF"])
 
     with tabs[0]:
         df = pd.DataFrame(out.cashflow_rows)
-        st.caption("Cashflow is gross cash + VAT settlement timing; debt is constrained by LTC/LTV + presales gate.")
-
+        st.caption("Cashflow includes sale receipts, rental receipts, exit value, VAT settlement timing, and constrained debt draws.")
         fig = go.Figure()
         fig.add_trace(go.Bar(x=df["Month"], y=df["Revenue (gross)"], name="Revenue (gross)"))
         fig.add_trace(go.Bar(x=df["Month"], y=-df["Costs (gross incl VAT)"], name="-Costs (gross)"))
@@ -417,13 +440,13 @@ with right:
             z=mat,
             x=cols,
             y=rows,
-            hovertemplate="Price: %{y}<br>Cost: %{x}<br>Value: %{z:,.0f}<extra></extra>"
+            hovertemplate="Price/Rent: %{y}<br>Cost: %{x}<br>Value: %{z:,.0f}<extra></extra>"
         ))
         heat.update_layout(height=360, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(heat, use_container_width=True)
 
         metric = "Residual land (net)" if a.solve_residual_land else "Profit (net)"
-        st.caption(f"Sensitivity metric: **{metric}**")
+        st.caption(f"Sensitivity metric: **{metric}** (price axis uplifts sale prices and rents; cost axis uplifts build costs).")
         st.dataframe(pd.DataFrame(mat, index=rows, columns=cols).applymap(lambda v: money(float(v), out.currency)), use_container_width=True)
 
     with tabs[2]:
@@ -456,15 +479,15 @@ with right:
                 oo = run_appraisal(aa)
                 return labels[app_id], oo
 
-            rows = []
+            rows_ = []
             for slot, pid in [("A", pickA), ("B", pickB), ("C", pickC)]:
                 res = load_recalc(pid)
                 if res:
                     label, oo = res
-                    rows.append({
+                    rows_.append({
                         "Slot": slot,
                         "Version": label,
-                        "GDV (net)": oo.gdv_net,
+                        "Revenue (net)": oo.gdv_net,
                         "Profit (net)": oo.profit_net,
                         "Profit % Cost": oo.profit_on_cost,
                         "Peak debt": oo.peak_debt,
@@ -473,11 +496,11 @@ with right:
                         "Presales gate month": oo.presales_gate_month,
                     })
 
-            dfc = pd.DataFrame(rows)
+            dfc = pd.DataFrame(rows_)
             if not dfc.empty:
                 ccy = out.currency
                 show = dfc.copy()
-                for col in ["GDV (net)", "Profit (net)", "Peak debt", "VAT total"]:
+                for col in ["Revenue (net)", "Profit (net)", "Peak debt", "VAT total"]:
                     show[col] = show[col].astype(float).map(lambda v: money(v, ccy))
                 show["Profit % Cost"] = show["Profit % Cost"].astype(float).map(pct)
                 show["Equity IRR p.a."] = show["Equity IRR p.a."].apply(lambda v: "-" if v is None else pct(float(v)))
