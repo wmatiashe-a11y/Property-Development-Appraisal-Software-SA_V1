@@ -86,6 +86,12 @@ def kpis(out):
     c1.metric("Refinance month", "-" if rm is None or int(rm) < 0 else str(int(rm) + 1))  # display as 1-index
     c2.metric("Term loan (sized)", "-" if tla is None else money(float(tla), ccy))
     c3.metric("Term DSCR @ refi", "-" if dscr is None else f"{float(dscr):.2f}x")
+    a.term_io_months = int(st.slider("Term IO months", 0, 36, int(getattr(a, "term_io_months", 0)), 1))
+    a.term_dscr_noi_basis = st.selectbox(
+        "DSCR NOI basis",
+        ["stabilised_month_annualised", "steady_state_annual"],
+        index=0 if str(getattr(a, "term_dscr_noi_basis", "stabilised_month_annualised")) != "steady_state_annual" else 1,
+)
 
 
 # ----------------------------
