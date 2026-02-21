@@ -79,6 +79,58 @@ def _compute_presales_gate_month(a: Assumptions, product_meta: List[Dict[str, An
     return 10_000
 
 
+# ----------------------------
+# NEW: build an IO → amort schedule (payments + interest/principal)
+# ----------------------------
+def _term_schedule(
+    principal: float,
+    monthly_rate: float,
+    io_months: int,
+    amort_months: int,
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Returns (payment, interest, principal) arrays for total length io_months+amort_months.
+    During IO: payment = interest only (principal unchanged).
+    During amort: payment = annuity over amort_months on remaining principal.
+    """
+    io_months = int(max(0, io_months))
+    amort_months = int(max(0, amort_months))
+    n = io_months + amort_months
+    if principal <= 0 or n <= 0:
+        return np.zeros(0), np.zeros(0), np.zeros(0)
+
+    pay = np.zeros(n)
+    intr = np.zeros(n)
+    prin = np.zeros(n)
+
+    bal = float(principal)
+    r = float(max(0.0, monthly_rate))
+
+    # IO period
+    for m in range(io_months):
+        i = bal * r
+        pmt = i
+        pay[m] = pmt
+        intr[m] = i
+        prin[m] = 0.0
+
+    # Amortisation period
+    if amort_months > 0:
+        ann = _annuity_payment(bal, r, amort_months)
+        for k in range(amort_months):
+            idx = io_months + k
+            i = bal * r
+            pr = max(0.0, ann - i)
+            pr = min(pr, bal)
+            pmt = i + pr
+            pay[idx] = pmt
+            intr[idx] = i
+            prin[idx] = pr
+            bal -= pr
+
+    return pay, intr, prin
+
+
 def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
     ccy = a.currency or "ZAR"
     audit: List[Dict[str, Any]] = []
@@ -96,7 +148,15 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
 
     term_rate_pa = float(a.prime_rate_pa + a.term_margin_over_prime)
     term_rate_m = (1 + term_rate_pa) ** (1 / 12) - 1
-    term_n = int(max(1, int(a.term_amort_years) * 12))
+
+    term_total_months = int(max(1, int(a.term_amort_years) * 12))
+    term_io_months = int(max(0, int(getattr(a, "term_io_months", 0))))
+    term_amort_months = int(max(1, term_total_months - term_io_months))  # ensure >=1 for sizing
+
+    # DSCR NOI basis (NEW)
+    dscr_basis = str(getattr(a, "term_dscr_noi_basis", "stabilised_month_annualised") or "stabilised_month_annualised")
+    if dscr_basis not in ("steady_state_annual", "stabilised_month_annualised"):
+        dscr_basis = "stabilised_month_annualised"
 
     # ---------- PRODUCT META ----------
     product_meta: List[Dict[str, Any]] = []
@@ -105,7 +165,8 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
     sale_gdv_net_total = 0.0
 
     rental_value_net_for_ltv = 0.0
-    rental_noi_annual_total = 0.0
+    rental_noi_annual_total = 0.0  # steady-state annual NOI (existing)
+    rental_noi_stab_month_total = 0.0  # NEW: stabilised monthly NOI (sum across rental lines)
 
     for p in (a.products or []):
         name = str(p.get("name") or "Product")
@@ -222,9 +283,17 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
 
         if is_rental:
             occ_target = max(0.0, 1.0 - vac)
+
+            # steady-state annual NOI (net of VAT)
             annual_gross_rent_net = net_sqm * rent_psm_m * occ_target * 12.0
             noi_annual = annual_gross_rent_net * (1.0 - opex_ratio)
             rental_noi_annual_total += noi_annual
+
+            # NEW: stabilised monthly NOI (net of VAT)
+            monthly_gross_rent_net = net_sqm * rent_psm_m * occ_target
+            noi_month = monthly_gross_rent_net * (1.0 - opex_ratio)
+            rental_noi_stab_month_total += noi_month
+
             rental_value_net_for_ltv += (noi_annual / max(1e-6, exit_cap))
 
     # ---------- TIMELINE ----------
@@ -318,9 +387,7 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
     # Rental receipts + exit via cap (cash)
     rental_income_net_total = 0.0
     rental_exit_value_net_total = 0.0
-    rental_exit_value_gross_total = 0.0
 
-    # For refinance month: define stabilisation month as max(end_of_letting_up) across rental lines
     stabilisation_month = -1
 
     for r in product_meta:
@@ -350,7 +417,6 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
             occ = occ_target if letting <= 0 else occ_target * min(1.0, t / letting)
             gross_rent_cash = net_sqm * rent_psm_m * occ
 
-            # Rent VAT handling: if rent is VAT-exclusive and VAT enabled, rent cash includes VAT
             if vat_cfg.enabled and bool(r["rent_is_vat_exclusive"]):
                 gross_rent_cash *= (1 + vr)
 
@@ -376,16 +442,14 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
             revenue_gross[exit_month] += exit_value_gross
 
         rental_exit_value_net_total += exit_value_net
-        rental_exit_value_gross_total += exit_value_gross
 
         r["noi_stab_annual"] = float(noi_stab_annual)
         r["exit_value_net"] = float(exit_value_net)
         r["exit_value_gross"] = float(exit_value_gross)
 
-    # If no rental lines, disable term refi (no point)
     has_rental = any(r["is_rental"] for r in product_meta)
     if stabilisation_month < 0:
-        stabilisation_month = last_build_end  # fallback
+        stabilisation_month = last_build_end
 
     # ---------- LAND + FRICTION ----------
     earliest_start = min(int(r["start"]) for r in product_meta) if product_meta else 0
@@ -472,7 +536,6 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
     gdv_net_total = float(sale_gdv_net_total + rental_income_net_total + rental_exit_value_net_total)
     costs_net_ex_land_ex_fin = float(build_total_net + prof_fees_net + statutory_net + marketing_net + overhead_net)
 
-    # Debt caps use net economics (conservative)
     cost_budget_net = costs_net_ex_land_ex_fin + land_net + friction_net
     max_debt_cap = min(float(a.max_ltc) * cost_budget_net, float(a.max_ltv) * gdv_net_total) if a.use_debt else 0.0
     min_equity_required = float(a.min_equity_pct) * cost_budget_net
@@ -484,28 +547,40 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
 
     if a.use_debt and a.enable_term_debt and has_rental and a.refinance_at_stabilisation:
         refinance_month = int(max(0, min(months - 1, stabilisation_month + int(a.refinance_month_offset))))
+
         # Value basis (net) = sum NOI/cap (pre selling costs)
         value_net = float(rental_value_net_for_ltv)
-        noi_annual = float(rental_noi_annual_total)
 
         # LTV cap
         loan_by_ltv = float(a.term_max_ltv) * value_net
 
+        # DSCR NOI selection (NEW)
+        if dscr_basis == "steady_state_annual":
+            noi_annual_for_dscr = float(rental_noi_annual_total)
+        else:
+            # stabilised monthly NOI * 12
+            noi_annual_for_dscr = float(rental_noi_stab_month_total) * 12.0
+
         # DSCR cap:
-        # DSCR = NOI / ADS, where ADS = annual debt service.
-        # debt constant = ADS / principal for an amortising loan at (term_rate, term_n)
-        payment_per_1 = _annuity_payment(1.0, term_rate_m, term_n)
-        annual_ds_per_1 = payment_per_1 * 12.0
-        debt_constant = annual_ds_per_1  # because principal = 1.0
-        loan_by_dscr = noi_annual / max(1e-9, (float(a.term_dscr_min) * debt_constant))
+        # DSCR = NOI / ADS; ADS depends on IO + amort schedule.
+        # debt constant = annual debt service per 1 unit principal (over the first year post-refi).
+        # For sizing, we use an average annual debt service in Year 1 of term debt.
+        pay1, _, _ = _term_schedule(1.0, term_rate_m, term_io_months, term_amort_months)
+        # If schedule shorter than 12 months, use what exists.
+        first_12 = pay1[: min(12, len(pay1))]
+        annual_ds_per_1 = float(first_12.sum()) if len(first_12) > 0 else float((_annuity_payment(1.0, term_rate_m, term_amort_months) * 12.0))
+        debt_constant = max(1e-12, annual_ds_per_1)
+
+        loan_by_dscr = noi_annual_for_dscr / max(1e-9, (float(a.term_dscr_min) * debt_constant))
 
         term_loan_amt = max(0.0, min(loan_by_ltv, loan_by_dscr))
 
-        # DSCR at refi using the sized term loan
+        # DSCR at refi on chosen NOI basis
         if term_loan_amt > 0:
-            pay = _annuity_payment(term_loan_amt, term_rate_m, term_n)
-            ads = pay * 12.0
-            term_dscr_at_refi = noi_annual / ads if ads > 0 else None
+            pay, _, _ = _term_schedule(term_loan_amt, term_rate_m, term_io_months, term_amort_months)
+            first_12 = pay[: min(12, len(pay))]
+            ads = float(first_12.sum()) if len(first_12) > 0 else 0.0
+            term_dscr_at_refi = (noi_annual_for_dscr / ads) if ads > 0 else None
         else:
             term_dscr_at_refi = None
 
@@ -527,8 +602,11 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
         eq_total = 0.0
         gate = presales_gate_month
 
-        # fixed term payment once refi happens
-        fixed_term_payment = _annuity_payment(term_loan_amt, term_rate_m, term_n) if (term_loan_amt > 0) else 0.0
+        # Precompute term schedule for this term loan (NEW)
+        if refinance_month >= 0 and term_loan_amt > 0 and a.enable_term_debt:
+            sch_pay, sch_int, sch_prin = _term_schedule(term_loan_amt, term_rate_m, term_io_months, term_amort_months)
+        else:
+            sch_pay, sch_int, sch_prin = np.zeros(0), np.zeros(0), np.zeros(0)
 
         for m in range(months):
             net = float(revenue_gross[m]) - float(costs_cash[m]) - float(vat_cash[m])
@@ -540,15 +618,12 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
 
             # 🔁 Refinance event (swap construction debt → term debt)
             if refinance_month >= 0 and m == refinance_month and a.enable_term_debt and term_loan_amt > 0:
-                # pay off construction debt using term loan proceeds (no cash by default)
-                # if term loan smaller than existing debt => equity injection to close the gap
                 if term_loan_amt < debt:
                     shortfall = debt - term_loan_amt
                     equity_inj[m] += shortfall
                     eq_total += shortfall
                     debt = term_loan_amt
                 else:
-                    # if term > debt: optionally cash-out
                     surplus = term_loan_amt - debt
                     debt = term_loan_amt
                     if a.allow_cash_out_refi and surplus > 0:
@@ -561,7 +636,7 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
                 need = -cash
                 can_draw = 0.0
                 if a.use_debt:
-                    # if we're in term phase (post refi), allow draw only up to term loan amount (no revolver)
+                    # if we're in term phase (post refi), no revolver
                     if refinance_month >= 0 and m >= refinance_month and term_loan_amt > 0:
                         can_draw = 0.0
                     else:
@@ -579,25 +654,25 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
                     eq_total += inj
                     cash = 0.0
 
-            # Term debt service (cash) after refi
-            if refinance_month >= 0 and m >= refinance_month and term_loan_amt > 0 and debt > 0:
-                # Pay scheduled payment; last payment may be smaller
-                interest = debt * term_rate_m
-                principal = min(debt, max(0.0, fixed_term_payment - interest))
-                pay = interest + principal
-                cash -= pay
-                debt -= principal
-                debt_service[m] += pay
+            # Term debt service (cash) after refi (NEW: IO→amort schedule)
+            if refinance_month >= 0 and m >= refinance_month and term_loan_amt > 0 and debt > 0 and len(sch_pay) > 0:
+                idx = m - refinance_month
+                if 0 <= idx < len(sch_pay):
+                    pay = float(sch_pay[idx])
+                    prin = float(sch_prin[idx])
+                    # apply payment and principal reduction
+                    cash -= pay
+                    debt = max(0.0, debt - prin)
+                    debt_service[m] += pay
 
-                if cash < 0:
-                    inj = -cash
-                    equity_inj[m] += inj
-                    eq_total += inj
-                    cash = 0.0
+                    if cash < 0:
+                        inj = -cash
+                        equity_inj[m] += inj
+                        eq_total += inj
+                        cash = 0.0
 
-            # Construction: interest-only during build, capitalised
+            # Construction: interest-only during build, capitalised (pre-refi)
             if a.use_debt and debt > 0 and (refinance_month < 0 or m < refinance_month):
-                # capitalise interest monthly
                 i = debt * construction_rate_m
                 debt += i
                 interest_cap[m] += i
@@ -626,9 +701,6 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
             equity_inj[0] += top
             eq_total += top
 
-        # finance costs: construction interest capitalised + term debt service interest already in debt_service (cash)
-        # We’ll count total term debt service as finance cashflow, but for economic “finance cost” we want interest+fees.
-        # MVP: treat full debt service as finance cash impact; for headline finance_costs we’ll use interest_cap + fees + (debt_service - principal repaid).
         return float(peak), float(eq_total), float(interest_cap.sum())
 
     # iterate fees (peak debt depends on fees)
@@ -660,24 +732,13 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
     debt_bal[:] = 0
     peak_debt, equity_total, constr_interest_total = simulate(arrangement_fee, exit_fee)
 
-    # Split term debt service into interest/principal (approx by replaying amort schedule on arrays)
-    # For MVP headline finance costs: construction interest + fees + term interest portion.
+    # Term interest portion for headline finance costs (NEW: use schedule)
     term_interest_total = 0.0
-    if refinance_month >= 0 and term_loan_amt > 0:
-        bal = term_loan_amt
-        fixed = _annuity_payment(term_loan_amt, term_rate_m, term_n)
-        for m in range(refinance_month, months):
-            if bal <= 0:
-                break
-            intr = bal * term_rate_m
-            prin = min(bal, max(0.0, fixed - intr))
-            pay = intr + prin
-            # only count months where we actually paid service (debt_service row)
-            if debt_service[m] > 0:
-                term_interest_total += intr
-            bal -= prin
-            if pay <= 0:
-                break
+    if refinance_month >= 0 and term_loan_amt > 0 and a.enable_term_debt:
+        pay, intr, _ = _term_schedule(term_loan_amt, term_rate_m, term_io_months, term_amort_months)
+        # sum interest for months actually within project horizon
+        n = min(len(intr), max(0, months - refinance_month))
+        term_interest_total = float(intr[:n].sum()) if n > 0 else 0.0
 
     finance_costs = float(constr_interest_total + arrangement_fee + exit_fee + term_interest_total)
 
@@ -732,7 +793,6 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
         }
         if r["is_sale"]:
             row.update({
-                "Price / Net sqm": _safe_float(next((p.get("sale_price_per_net_sqm") for p in a.products if p.get("name") == r["name"]), r.get("sale_price_per_net_sqm", 0.0))),
                 "GDV gross": r["gdv_gross"],
                 "GDV net": r["gdv_net"],
                 "IH sqm": r["ih_sqm"],
@@ -755,6 +815,16 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
         ui_products.append(row)
 
     # ---------- AUDIT ----------
+    # DSCR NOI number used (for transparency)
+    noi_basis_label = "steady_state_annual" if dscr_basis == "steady_state_annual" else "stabilised_month_annualised"
+    noi_used = float(rental_noi_annual_total) if dscr_basis == "steady_state_annual" else float(rental_noi_stab_month_total) * 12.0
+
+    audit.extend([
+        {"section": "Finance", "key": "Term IO months", "value": int(term_io_months), "unit": ""},
+        {"section": "Finance", "key": "DSCR NOI basis", "value": noi_basis_label, "unit": ""},
+        {"section": "Finance", "key": "NOI used for DSCR (annualised)", "value": float(noi_used), "unit": ccy},
+    ])
+
     audit.extend([
         {"section": "Revenue", "key": "Sale GDV net", "value": float(sale_gdv_net_total), "unit": ccy},
         {"section": "Revenue", "key": "Rental income net (total)", "value": float(rental_income_net_total), "unit": ccy},
@@ -771,7 +841,7 @@ def run_appraisal(a: Assumptions, max_iter: int = 30) -> Output:
         {"section": "Finance", "key": "Term rate p.a.", "value": float(term_rate_pa), "unit": "ratio"},
         {"section": "Finance", "key": "Refinance month (0-index)", "value": int(refinance_month), "unit": ""},
         {"section": "Finance", "key": "Term loan amount (sized by min LTV/DSCR)", "value": float(term_loan_amt), "unit": ccy},
-        {"section": "Finance", "key": "Term DSCR @ refi", "value": (0.0 if term_dscr_at_refi is None else float(term_dscr_at_refi)), "unit": "ratio"},
+        {"section": "Finance", "key": "Term DSCR @ refi (Year-1 ADS)", "value": (0.0 if term_dscr_at_refi is None else float(term_dscr_at_refi)), "unit": "ratio"},
 
         {"section": "Finance", "key": "Debt cap (construction: min LTC/LTV)", "value": float(max_debt_cap), "unit": ccy},
         {"section": "Finance", "key": "Arrangement fee", "value": float(arrangement_fee), "unit": ccy},
