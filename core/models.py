@@ -18,89 +18,66 @@ def deep_merge(a: dict, b: dict) -> dict:
 
 
 def default_phases() -> List[Dict[str, Any]]:
-    # For sale products: build + sales.
-    # For rental/yield products: build + hold (configured on product line).
     return [
         {"name": "Phase 1", "start_month": 0, "build_months": 18, "sales_months": 12, "sales_curve": "linear"}
     ]
 
 
 def default_products() -> List[Dict[str, Any]]:
-    """
-    SA conventions:
-    - Revenue is on Net area (NSA/NLA)
-    - Build costs are on GBA
-    - Efficiency converts Net -> GBA: GBA = Net / efficiency
-    """
     return [
         {
             "name": "Residential (Sale)",
-            "type": "residential_sale",          # residential_sale | commercial_sale | rental_yield
+            "type": "residential_sale",
             "phase": "Phase 1",
-
-            # Net area (NSA)
             "units": 60,
             "avg_unit_net_sqm": 55.0,
-            "net_sqm": None,                    # computed if residential_sale with units
+            "net_sqm": None,
             "efficiency_ratio": 0.83,
-
-            # Sale pricing per NET sqm (as entered; VAT logic applied by VAT config)
             "sale_price_per_net_sqm": 38000.0,
-
-            # Build cost per GBA sqm (as entered)
             "build_cost_per_gba_sqm": 17500.0,
-
-            # Bankability / sales streams
             "offplan_share": 0.60,
             "deposit_pct": 0.10,
             "deposit_released_during_build": False,
             "presales_pct": 0.60,
             "presales_achieved_month": 6,
-
-            # Overlays
             "ih_eligible": True,
         },
         {
             "name": "Retail (Sale)",
             "type": "commercial_sale",
             "phase": "Phase 1",
-
             "net_sqm": 600.0,
             "efficiency_ratio": 0.90,
             "sale_price_per_net_sqm": 52000.0,
             "build_cost_per_gba_sqm": 22000.0,
-
             "offplan_share": 0.10,
             "deposit_pct": 0.05,
             "deposit_released_during_build": False,
             "presales_pct": 0.0,
             "presales_achieved_month": 0,
-
             "ih_eligible": False,
         },
         {
             "name": "Office / Resi BTL (Yield)",
             "type": "rental_yield",
             "phase": "Phase 1",
-
             "net_sqm": 1200.0,
             "efficiency_ratio": 0.88,
             "build_cost_per_gba_sqm": 21000.0,
 
             # Rental assumptions
-            "rent_per_net_sqm_month": 240.0,          # ZAR / net sqm / month (as entered)
-            "rent_is_vat_exclusive": True,            # typical commercial leases: rent + VAT
-            "opex_ratio": 0.35,                       # opex as % of gross rent (NOI margin = 1-opex)
-            "vacancy_stabilized": 0.05,               # stabilized vacancy
-            "letting_up_months": 12,                  # ramp occupancy 0 -> (1-vacancy)
-            "hold_months_after_build": 36,            # hold after build end (includes letting-up)
-            "selling_cost_rate": 0.02,                # brokerage/legal on exit value
+            "rent_per_net_sqm_month": 240.0,
+            "rent_is_vat_exclusive": True,
+            "opex_ratio": 0.35,
+            "vacancy_stabilized": 0.05,
+            "letting_up_months": 12,
+            "hold_months_after_build": 36,
+            "selling_cost_rate": 0.02,
 
             # Valuation
-            "exit_cap_rate": 0.095,                   # stabilized NOI / cap = value (SA typical varies by node)
-            "exit_cap_applies_to": "noi_stabilized",   # MVP constant
+            "exit_cap_rate": 0.095,
+            "exit_cap_applies_to": "noi_stabilized",
 
-            # Bankability overlay
             "ih_eligible": False,
         }
     ]
@@ -113,37 +90,36 @@ class Assumptions:
     phases: List[Dict[str, Any]] = field(default_factory=default_phases)
     products: List[Dict[str, Any]] = field(default_factory=default_products)
 
-    # Overlays (tabs)
+    # Overlays
     inclusionary_enabled: bool = True
-    inclusionary_rate: float = 0.0                    # % of eligible resi sale net sqm at capped price
-    inclusionary_price_per_net_sqm: float = 18000.0   # ZAR/net sqm (as entered)
+    inclusionary_rate: float = 0.0
+    inclusionary_price_per_net_sqm: float = 18000.0
 
     heritage_enabled: bool = False
-    heritage_cost_uplift_rate: float = 0.00           # uplift on build cost base
+    heritage_cost_uplift_rate: float = 0.00
 
-    # Cost add-ons / risk
+    # Risk / soft costs
     contingency_rate: float = 0.07
     escalation_rate_pa: float = 0.07
-
     professional_fees_rate: float = 0.10
     statutory_costs: float = 350000.0
     marketing_rate: float = 0.02
     overhead_per_month: float = 25000.0
 
-    # Land acquisition & friction
+    # Land + friction
     land_price: float = 15_000_000.0
-    land_treatment: str = "transfer_duty"  # transfer_duty | vat_standard | vat_zero
+    land_treatment: str = "transfer_duty"
     legal_conveyancing: float = 150_000.0
     land_other_disbursements: float = 50_000.0
 
     # VAT
     vat: Dict[str, Any] = field(default_factory=lambda: asdict(VATConfig()))
 
-    # Profit target norms
-    target_profit_basis: str = "cost"  # gdv | cost
+    # Profit target
+    target_profit_basis: str = "cost"
     target_profit_rate: float = 0.18
 
-    # Finance + constraints
+    # Construction finance + constraints
     use_debt: bool = True
     prime_rate_pa: float = 0.1025
     debt_margin_over_prime: float = 0.015
@@ -159,7 +135,17 @@ class Assumptions:
     arrangement_fee_rate: float = 0.01
     exit_fee_rate: float = 0.005
 
-    # Residual land mode
+    # ✅ Term debt / DSCR (post-stabilisation refinance)
+    enable_term_debt: bool = True
+    term_margin_over_prime: float = 0.010          # Prime + 1.0% typical “term”
+    term_amort_years: int = 15                     # 10–20 yrs common
+    term_dscr_min: float = 1.25                    # DSCR covenant
+    term_max_ltv: float = 0.65                     # term LTV cap against value
+    refinance_at_stabilisation: bool = True        # refi month = end of letting-up (default)
+    refinance_month_offset: int = 0                # extra months after stabilisation
+    allow_cash_out_refi: bool = False              # conservative default: no cash-out
+
+    # Residual land
     solve_residual_land: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
@@ -176,8 +162,7 @@ class Assumptions:
 class Output:
     currency: str
 
-    # Totals (net-of-VAT if recoverable)
-    gdv_net: float                      # for mixed: sale proceeds net + rent net + exit value net
+    gdv_net: float
     costs_net_ex_land_ex_fin: float
     land_net: float
     friction_net: float
@@ -193,6 +178,11 @@ class Output:
     months: int
     vat_net_payable_total: float
     presales_gate_month: int
+
+    # term debt stats
+    refinance_month: int
+    term_loan_amount: float
+    term_dscr_at_refi: Optional[float]
 
     product_rows: List[Dict[str, Any]] = field(default_factory=list)
     cashflow_rows: List[Dict[str, Any]] = field(default_factory=list)
@@ -211,6 +201,9 @@ class Output:
             "Profit % Revenue": self.profit_on_gdv,
             "Peak debt": self.peak_debt,
             "Equity IRR p.a.": self.equity_irr_pa,
+            "Refinance month": self.refinance_month,
+            "Term loan amount": self.term_loan_amount,
+            "Term DSCR @ refi": self.term_dscr_at_refi,
             "VAT net settlement total": self.vat_net_payable_total,
             "Presales gate month": self.presales_gate_month,
         }
