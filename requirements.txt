@@ -2,5 +2,4 @@ streamlit>=1.36
 pandas>=2.2
 numpy>=2.0
 plotly>=5.22
-reportlab
-matplotlib
+reportlab>=4.0
