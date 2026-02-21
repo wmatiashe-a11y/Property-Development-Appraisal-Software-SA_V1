@@ -4,9 +4,10 @@ from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional
 import copy
 
+from .taxes_sa import VATConfig
+
 
 def deep_merge(a: dict, b: dict) -> dict:
-    """Merge b into a (recursively) without mutating inputs."""
     out = copy.deepcopy(a)
     for k, v in (b or {}).items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
@@ -16,77 +17,112 @@ def deep_merge(a: dict, b: dict) -> dict:
     return out
 
 
+def default_phases() -> List[Dict[str, Any]]:
+    # SA typical: one phase; you can add more in UI
+    return [
+        {"name": "Phase 1", "start_month": 0, "build_months": 18, "sales_months": 12, "sales_curve": "linear"}
+    ]
+
+
 def default_products() -> List[Dict[str, Any]]:
     """
-    Product mix lines.
-    - residential: units * avg_unit_size_sqm => sellable_sqm
-    - commercial: sellable_sqm input directly
+    Key SA convention baked in:
+    - Revenue is on Net area (NSA/NLA)
+    - Build costs are on GBA
+    - Efficiency ratio converts Net -> GBA: GBA = Net / efficiency
     """
     return [
         {
             "name": "Residential",
-            "type": "residential",  # residential | commercial
-            "units": 40,
-            "avg_unit_size_sqm": 60.0,
-            "sellable_sqm": None,  # computed for residential
-            "price_per_sqm": 38000.0,  # ZAR/sqm
-            "build_cost_per_sqm": 17500.0,  # ZAR/sqm (sellable proxy)
-            "inclusionary_eligible": True,  # apply IH split if enabled
+            "type": "residential_sale",          # residential_sale | commercial_sale (MVP)
+            "phase": "Phase 1",
+
+            # Net area (NSA)
+            "units": 60,
+            "avg_unit_net_sqm": 55.0,           # NSA per unit
+            "net_sqm": None,                    # computed for residential
+            "efficiency_ratio": 0.83,           # NSA/GBA typical 0.80–0.85
+
+            # Prices: selling price per NET sqm (VAT treatment via vat config)
+            "sale_price_per_net_sqm": 38000.0,  # ZAR per NSA sqm (typically VAT-inclusive in SA new-build sales)
+
+            # Costs: build cost per GBA sqm
+            "build_cost_per_gba_sqm": 17500.0,  # ZAR per GBA sqm
+
+            # Sales streams
+            "offplan_share": 0.60,              # % of GDV sold during build (contracts), cash collected at transfer unless deposit released
+            "deposit_pct": 0.10,                # deposit % of contract value
+            "deposit_released_during_build": False,  # typically held in trust until transfer
+            "presales_pct": 0.60,               # bankable presales % of this line's GDV
+            "presales_achieved_month": 6,       # month in which presales are achieved (contracts signed)
         },
         {
             "name": "Retail",
-            "type": "commercial",
-            "units": None,
-            "avg_unit_size_sqm": None,
-            "sellable_sqm": 600.0,
-            "price_per_sqm": 52000.0,
-            "build_cost_per_sqm": 22000.0,
-            "inclusionary_eligible": False,
+            "type": "commercial_sale",
+            "phase": "Phase 1",
+
+            "net_sqm": 600.0,                   # NLA
+            "efficiency_ratio": 0.90,           # often higher for commercial
+            "sale_price_per_net_sqm": 52000.0,
+            "build_cost_per_gba_sqm": 22000.0,
+
+            "offplan_share": 0.10,
+            "deposit_pct": 0.05,
+            "deposit_released_during_build": False,
+            "presales_pct": 0.0,
+            "presales_achieved_month": 0,
         },
     ]
 
 
 @dataclass
 class Assumptions:
-    # --- GLOBAL ---
     currency: str = "ZAR"
 
-    # --- PROGRAMME ---
-    build_months: int = 18
-    sales_months: int = 12
-    sales_curve: str = "linear"  # linear | front | back
-
-    # --- MIX ---
+    phases: List[Dict[str, Any]] = field(default_factory=default_phases)
     products: List[Dict[str, Any]] = field(default_factory=default_products)
 
-    # --- COST ADD-ONS / RATES ---
-    contingency_rate: float = 0.07          # on build+uplifts+escalation
-    escalation_rate_pa: float = 0.06        # build cost escalation
-    heritage_cost_uplift_rate: float = 0.00 # uplift on build costs
+    # Cost add-ons / risk
+    contingency_rate: float = 0.07
+    escalation_rate_pa: float = 0.07
+    heritage_cost_uplift_rate: float = 0.00
 
-    professional_fees_rate: float = 0.10    # % of build total (incl contingency/escalation/uplifts)
-    statutory_costs: float = 350000.0       # lump sum (bulk services, approvals)
-    marketing_rate: float = 0.02            # % of GDV
-    overhead_per_month: float = 25000.0     # monthly overhead during build+sales
+    professional_fees_rate: float = 0.10
+    statutory_costs: float = 350000.0
+    marketing_rate: float = 0.02
+    overhead_per_month: float = 25000.0
 
-    # --- POLICY / OVERLAYS ---
-    inclusionary_rate: float = 0.0          # % of eligible residential sellable sqm at capped price
-    inclusionary_price_per_sqm: float = 18000.0
-    incentive_grant: float = 0.0            # reduces costs (month 0)
+    # Land acquisition & friction
+    land_price: float = 15_000_000.0  # offer price (gross as entered)
+    land_treatment: str = "transfer_duty"  # transfer_duty | vat_standard | vat_zero
+    legal_conveyancing: float = 150_000.0
+    land_other_disbursements: float = 50_000.0
 
-    # --- PROFIT TARGET ---
-    target_profit_basis: str = "gdv"        # gdv | cost
+    # VAT
+    vat: Dict[str, Any] = field(default_factory=lambda: asdict(VATConfig()))
+
+    # Profit target norms (you can choose basis)
+    target_profit_basis: str = "cost"  # gdv | cost
     target_profit_rate: float = 0.18
 
-    # --- LAND ---
-    land_price_input: Optional[float] = None  # if set, compute profit; else solve residual land
-
-    # --- FINANCE (MONTHLY, REAL CASHFLOW) ---
+    # Finance + constraints
     use_debt: bool = True
-    debt_interest_rate_pa: float = 0.12
-    debt_arrangement_fee_rate: float = 0.01  # % of peak debt (MVP proxy)
-    debt_exit_fee_rate: float = 0.005        # % of peak debt
-    equity_injection_month0: float = 0.0     # equity injected at month 0 (reduces debt)
+    prime_rate_pa: float = 0.1025  # SARB prime ~10.25% (Feb 2026)
+    debt_margin_over_prime: float = 0.015  # Prime + 1.5% typical
+    debt_interest_only_during_build: bool = True
+
+    max_ltc: float = 0.70  # max loan-to-cost cap
+    max_ltv: float = 0.70  # max loan-to-value cap (against GDV net)
+    min_equity_pct: float = 0.30  # bank requires 30–40% equity
+
+    presales_required_pct_resi: float = 0.60  # 50–70% typical before first draw
+    allow_debt_draw_before_presales: bool = False
+
+    arrangement_fee_rate: float = 0.01  # % of peak debt
+    exit_fee_rate: float = 0.005
+
+    # Residual land mode (optional)
+    solve_residual_land: bool = False   # if True, land is solved to hit target profit; ignores land_price + friction
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -102,34 +138,44 @@ class Assumptions:
 class Output:
     currency: str
 
-    # headline
-    gdv: float
-    tdc_ex_land_ex_finance: float
+    # Econ totals (net-of-VAT if recoverable; otherwise gross)
+    gdv_net: float
+    costs_net_ex_land_ex_fin: float
+    land_net: float
+    friction_net: float  # transfer duty + legal etc
     finance_costs: float
-    land_value: float
-    total_cost_incl_land_finance: float
-    profit: float
-    profit_rate_on_gdv: float
-    profit_rate_on_cost: float
+    total_cost_net: float
+    profit_net: float
+    profit_on_cost: float
+    profit_on_gdv: float
+
+    # Finance + IRR
     peak_debt: float
     equity_irr_pa: Optional[float]
 
-    # details
+    # Diagnostics
     months: int
+    vat_net_payable_total: float
+    presales_gate_month: int
+
+    # Tables
+    product_rows: List[Dict[str, Any]] = field(default_factory=list)
     cashflow_rows: List[Dict[str, Any]] = field(default_factory=list)
     audit: List[Dict[str, Any]] = field(default_factory=list)
-    product_rows: List[Dict[str, Any]] = field(default_factory=list)
 
-    def headline_dict(self) -> Dict[str, Any]:
+    def headline(self) -> Dict[str, Any]:
         return {
-            "GDV": self.gdv,
-            "Costs (ex land, ex finance)": self.tdc_ex_land_ex_finance,
-            "Finance costs": self.finance_costs,
-            "Land": self.land_value,
-            "Total cost (incl land+finance)": self.total_cost_incl_land_finance,
-            "Profit": self.profit,
-            "Profit % GDV": self.profit_rate_on_gdv,
-            "Profit % Cost": self.profit_rate_on_cost,
+            "GDV (net)": self.gdv_net,
+            "Costs (net, ex land/fin)": self.costs_net_ex_land_ex_fin,
+            "Land (net)": self.land_net,
+            "Friction (net)": self.friction_net,
+            "Finance": self.finance_costs,
+            "Total cost (net)": self.total_cost_net,
+            "Profit (net)": self.profit_net,
+            "Profit % Cost": self.profit_on_cost,
+            "Profit % GDV": self.profit_on_gdv,
             "Peak debt": self.peak_debt,
             "Equity IRR p.a.": self.equity_irr_pa,
+            "VAT net payable (total)": self.vat_net_payable_total,
+            "Presales gate month": self.presales_gate_month,
         }
