@@ -522,7 +522,27 @@ with left:
     a.term_margin_over_prime = t2.slider("Term margin over prime", 0.0, 0.05, float(getattr(a, "term_margin_over_prime", 0.01)), 0.0025)
     a.term_amort_years = int(t3.slider("Amortisation (years)", 5, 30, int(getattr(a, "term_amort_years", 15)), 1))
     a.term_dscr_min = t4.slider("Min DSCR", 1.0, 2.0, float(getattr(a, "term_dscr_min", 1.25)), 0.05)
+    
+    # ✅ NEW: IO period + DSCR NOI basis
+    io1, io2 = st.columns([0.5, 0.5])
+    a.term_io_months = int(
+    io1.slider(
+        "Term loan IO months (interest-only after refi)",
+        0,
+        36,
+        int(getattr(a, "term_io_months", 12)),
+        1,
+    )
+)
 
+a.term_dscr_noi_basis = io2.selectbox(
+    "DSCR NOI basis",
+    ["stabilised_month_annualised", "steady_state_annual"],
+    index=0
+    if str(getattr(a, "term_dscr_noi_basis", "stabilised_month_annualised")) != "steady_state_annual"
+    else 1,
+    help="stabilised_month_annualised = stabilised monthly NOI × 12 (recommended). steady_state_annual = older method.",
+)
     u1, u2, u3, u4 = st.columns(4)
     a.term_max_ltv = u1.slider("Term max LTV", 0.30, 0.80, float(getattr(a, "term_max_ltv", 0.65)), 0.01)
     a.refinance_at_stabilisation = u2.toggle("Refi at stabilisation", value=bool(getattr(a, "refinance_at_stabilisation", True)))
