@@ -26,6 +26,19 @@ from data.db import (
 
 
 # ----------------------------
+# Safe numeric helper (NEW)
+# ----------------------------
+def fnum(v, default=0.0) -> float:
+    """Coerce potentially None/''/non-numeric values to float safely."""
+    try:
+        if v is None or v == "":
+            return float(default)
+        return float(v)
+    except Exception:
+        return float(default)
+
+
+# ----------------------------
 # Formatting helpers
 # ----------------------------
 def money(x: float, ccy: str) -> str:
@@ -272,9 +285,9 @@ with left:
         with st.expander(f"{idx+1}) {ph.get('name','Phase')}", expanded=(idx == 0)):
             c1, c2, c3, c4 = st.columns(4)
             ph["name"] = c1.text_input("Name", value=str(ph.get("name", "Phase")), key=f"ph_name_{idx}")
-            ph["start_month"] = int(c2.number_input("Start month (0=now)", 0, 240, int(ph.get("start_month", 0)), key=f"ph_start_{idx}"))
-            ph["build_months"] = int(c3.number_input("Build months", 1, 120, int(ph.get("build_months", 18)), key=f"ph_build_{idx}"))
-            ph["sales_months"] = int(c4.number_input("Sales months (sale products)", 1, 120, int(ph.get("sales_months", 12)), key=f"ph_sales_{idx}"))
+            ph["start_month"] = int(c2.number_input("Start month (0=now)", 0, 240, int(fnum(ph.get("start_month"), 0)), key=f"ph_start_{idx}"))
+            ph["build_months"] = int(c3.number_input("Build months", 1, 120, int(fnum(ph.get("build_months"), 18)), key=f"ph_build_{idx}"))
+            ph["sales_months"] = int(c4.number_input("Sales months (sale products)", 1, 120, int(fnum(ph.get("sales_months"), 12)), key=f"ph_sales_{idx}"))
             ph["sales_curve"] = st.selectbox(
                 "Sales curve",
                 ["linear", "front", "back"],
@@ -319,51 +332,88 @@ with left:
                 key=f"p_phase_{i}",
             )
 
-            p["efficiency_ratio"] = st.slider("Efficiency (Net/GBA)", 0.70, 0.95, float(p.get("efficiency_ratio", 0.83)), 0.01, key=f"p_eff_{i}")
+            p["efficiency_ratio"] = st.slider("Efficiency (Net/GBA)", 0.70, 0.95, fnum(p.get("efficiency_ratio"), 0.83), 0.01, key=f"p_eff_{i}")
 
             is_res = (p["type"] == "residential_sale")
             if is_res:
                 c1, c2, c3 = st.columns(3)
-                p["units"] = int(c1.number_input("Units", 0, 5000, int(p.get("units", 0)), 1, key=f"p_units_{i}"))
-                p["avg_unit_net_sqm"] = float(c2.number_input("Avg unit NSA (m²)", 0.0, 500.0, float(p.get("avg_unit_net_sqm", 0.0)), 1.0, key=f"p_avg_{i}"))
+                p["units"] = int(c1.number_input("Units", 0, 5000, int(fnum(p.get("units"), 0)), 1, key=f"p_units_{i}"))
+                p["avg_unit_net_sqm"] = float(c2.number_input("Avg unit NSA (m²)", 0.0, 500.0, fnum(p.get("avg_unit_net_sqm"), 0.0), 1.0, key=f"p_avg_{i}"))
                 net = p["units"] * p["avg_unit_net_sqm"]
                 c3.metric("Computed Net sqm", f"{net:,.0f}")
                 p["net_sqm"] = None
             else:
-                p["net_sqm"] = float(st.number_input("Net area (m²)", 0.0, 1e9, float(p.get("net_sqm", 0.0)), 10.0, key=f"p_net_{i}"))
-                p["units"] = int(p.get("units") or 0)
-                p["avg_unit_net_sqm"] = float(p.get("avg_unit_net_sqm") or 0.0)
+                # ✅ FIX: safe default when net_sqm is None / missing
+                p["net_sqm"] = float(
+                    st.number_input(
+                        "Net area (m²)",
+                        0.0,
+                        1e9,
+                        fnum(p.get("net_sqm"), 0.0),
+                        10.0,
+                        key=f"p_net_{i}",
+                    )
+                )
+                p["units"] = int(fnum(p.get("units"), 0))
+                p["avg_unit_net_sqm"] = float(fnum(p.get("avg_unit_net_sqm"), 0.0))
 
-            p["build_cost_per_gba_sqm"] = float(st.number_input("Build cost per GBA sqm", 0.0, 1e9, float(p.get("build_cost_per_gba_sqm", 0.0)), 500.0, key=f"p_cost_{i}"))
+            p["build_cost_per_gba_sqm"] = float(
+                st.number_input(
+                    "Build cost per GBA sqm",
+                    0.0,
+                    1e9,
+                    fnum(p.get("build_cost_per_gba_sqm"), 0.0),
+                    500.0,
+                    key=f"p_cost_{i}",
+                )
+            )
 
             if p["type"] in ("residential_sale", "commercial_sale"):
                 st.markdown("**Sale assumptions**")
-                p["sale_price_per_net_sqm"] = float(st.number_input("Sale price per NET sqm", 0.0, 1e9, float(p.get("sale_price_per_net_sqm", 0.0)), 500.0, key=f"p_price_{i}"))
+                p["sale_price_per_net_sqm"] = float(
+                    st.number_input(
+                        "Sale price per NET sqm",
+                        0.0,
+                        1e9,
+                        fnum(p.get("sale_price_per_net_sqm"), 0.0),
+                        500.0,
+                        key=f"p_price_{i}",
+                    )
+                )
 
                 st.markdown("**Bankability / sales streams**")
                 s1, s2, s3, s4 = st.columns(4)
-                p["offplan_share"] = s1.slider("Off-plan share", 0.0, 1.0, float(p.get("offplan_share", 0.0)), 0.05, key=f"p_off_{i}")
-                p["deposit_pct"] = s2.slider("Deposit %", 0.0, 0.30, float(p.get("deposit_pct", 0.0)), 0.01, key=f"p_dep_{i}")
+                p["offplan_share"] = s1.slider("Off-plan share", 0.0, 1.0, fnum(p.get("offplan_share"), 0.0), 0.05, key=f"p_off_{i}")
+                p["deposit_pct"] = s2.slider("Deposit %", 0.0, 0.30, fnum(p.get("deposit_pct"), 0.0), 0.01, key=f"p_dep_{i}")
                 p["deposit_released_during_build"] = s3.toggle("Deposit released during build", value=bool(p.get("deposit_released_during_build", False)), key=f"p_dep_rel_{i}")
-                p["presales_pct"] = s4.slider("Bankable presales %", 0.0, 1.0, float(p.get("presales_pct", 0.0)), 0.05, key=f"p_pre_{i}")
-                p["presales_achieved_month"] = int(st.number_input("Presales achieved month", 0, 240, int(p.get("presales_achieved_month", 0)), 1, key=f"p_pre_m_{i}"))
+                p["presales_pct"] = s4.slider("Bankable presales %", 0.0, 1.0, fnum(p.get("presales_pct"), 0.0), 0.05, key=f"p_pre_{i}")
+                p["presales_achieved_month"] = int(st.number_input("Presales achieved month", 0, 240, int(fnum(p.get("presales_achieved_month"), 0)), 1, key=f"p_pre_m_{i}"))
 
                 p["ih_eligible"] = st.toggle("IH eligible (resi sale only)", value=bool(p.get("ih_eligible", p["type"] == "residential_sale")), key=f"p_ih_{i}")
 
             else:
                 st.markdown("**Rental / yield valuation (BTL / commercial hold)**")
                 z1, z2, z3 = st.columns(3)
-                p["rent_per_net_sqm_month"] = float(z1.number_input("Rent per net sqm / month", 0.0, 1e9, float(p.get("rent_per_net_sqm_month", 0.0)), 5.0, key=f"p_rent_{i}"))
+                p["rent_per_net_sqm_month"] = float(
+                    z1.number_input(
+                        "Rent per net sqm / month",
+                        0.0,
+                        1e9,
+                        fnum(p.get("rent_per_net_sqm_month"), 0.0),
+                        5.0,
+                        key=f"p_rent_{i}",
+                    )
+                )
                 p["rent_is_vat_exclusive"] = z2.toggle("Rent + VAT (exclusive)", value=bool(p.get("rent_is_vat_exclusive", True)), key=f"p_rent_vat_{i}")
-                p["opex_ratio"] = z3.slider("Opex ratio (% of rent)", 0.0, 0.80, float(p.get("opex_ratio", 0.35)), 0.01, key=f"p_opex_{i}")
+                p["opex_ratio"] = z3.slider("Opex ratio (% of rent)", 0.0, 0.80, fnum(p.get("opex_ratio"), 0.35), 0.01, key=f"p_opex_{i}")
 
                 y1, y2, y3, y4 = st.columns(4)
-                p["vacancy_stabilized"] = y1.slider("Vacancy (stabilised)", 0.0, 0.30, float(p.get("vacancy_stabilized", 0.05)), 0.01, key=f"p_vac_{i}")
-                p["letting_up_months"] = int(y2.number_input("Letting-up months", 0, 60, int(p.get("letting_up_months", 12)), 1, key=f"p_let_{i}"))
-                p["hold_months_after_build"] = int(y3.number_input("Hold months after build", 0, 240, int(p.get("hold_months_after_build", 36)), 1, key=f"p_hold_{i}"))
-                p["exit_cap_rate"] = float(y4.slider("Exit cap rate", 0.03, 0.25, float(p.get("exit_cap_rate", 0.095)), 0.0025, key=f"p_cap_{i}"))
+                p["vacancy_stabilized"] = y1.slider("Vacancy (stabilised)", 0.0, 0.30, fnum(p.get("vacancy_stabilized"), 0.05), 0.01, key=f"p_vac_{i}")
+                p["letting_up_months"] = int(y2.number_input("Letting-up months", 0, 60, int(fnum(p.get("letting_up_months"), 12)), 1, key=f"p_let_{i}"))
+                p["hold_months_after_build"] = int(y3.number_input("Hold months after build", 0, 240, int(fnum(p.get("hold_months_after_build"), 36)), 1, key=f"p_hold_{i}"))
+                p["exit_cap_rate"] = float(y4.slider("Exit cap rate", 0.03, 0.25, fnum(p.get("exit_cap_rate"), 0.095), 0.0025, key=f"p_cap_{i}"))
 
-                p["selling_cost_rate"] = float(st.slider("Selling costs (% of exit value)", 0.0, 0.08, float(p.get("selling_cost_rate", 0.02)), 0.0025, key=f"p_sell_{i}"))
+                p["selling_cost_rate"] = float(st.slider("Selling costs (% of exit value)", 0.0, 0.08, fnum(p.get("selling_cost_rate"), 0.02), 0.0025, key=f"p_sell_{i}"))
                 p["ih_eligible"] = False
 
             d1, d2 = st.columns(2)
@@ -392,7 +442,7 @@ with left:
     with t_ih:
         a.inclusionary_enabled = st.toggle("Enable Inclusionary Housing overlay", value=bool(a.inclusionary_enabled))
         a.inclusionary_rate = st.slider("IH % of eligible resi sale net area", 0.0, 0.30, float(a.inclusionary_rate), 0.01)
-        a.inclusionary_price_per_net_sqm = float(st.number_input("IH capped price per net sqm", 0.0, 1e9, float(a.inclusionary_price_per_net_sqm), 500.0))
+        a.inclusionary_price_per_net_sqm = float(st.number_input("IH capped price per net sqm", 0.0, 1e9, fnum(a.inclusionary_price_per_net_sqm, 0.0), 500.0))
         st.caption("Applied only to product lines: **Type = residential_sale** with **IH eligible = True**.")
 
     with t_herit:
@@ -407,31 +457,31 @@ with left:
     a.professional_fees_rate = c3.slider("Professional fees", 0.0, 0.25, float(a.professional_fees_rate), 0.01)
 
     d1, d2, d3 = st.columns(3)
-    a.statutory_costs = float(d1.number_input("Statutory (lump sum)", 0.0, 1e12, float(a.statutory_costs), 50_000.0))
+    a.statutory_costs = float(d1.number_input("Statutory (lump sum)", 0.0, 1e12, fnum(a.statutory_costs, 0.0), 50_000.0))
     a.marketing_rate = d2.slider("Marketing (% of sale GDV net)", 0.0, 0.10, float(a.marketing_rate), 0.005)
-    a.overhead_per_month = float(d3.number_input("Overhead / month", 0.0, 1e12, float(a.overhead_per_month), 5_000.0))
+    a.overhead_per_month = float(d3.number_input("Overhead / month", 0.0, 1e12, fnum(a.overhead_per_month, 0.0), 5_000.0))
 
     # --------- LAND ----------
     st.markdown("### Land + friction")
     e1, e2, e3 = st.columns(3)
-    a.land_price = float(e1.number_input("Land price (as entered)", 0.0, 1e12, float(a.land_price), 250_000.0))
+    a.land_price = float(e1.number_input("Land price (as entered)", 0.0, 1e12, fnum(a.land_price, 0.0), 250_000.0))
     a.land_treatment = e2.selectbox("Land treatment", ["transfer_duty", "vat_standard", "vat_zero"], index=["transfer_duty", "vat_standard", "vat_zero"].index(a.land_treatment))
     a.solve_residual_land = e3.toggle("Solve residual land to hit target", value=bool(a.solve_residual_land))
 
     f1, f2 = st.columns(2)
-    a.legal_conveyancing = float(f1.number_input("Legal / conveyancing", 0.0, 1e12, float(a.legal_conveyancing), 10_000.0))
-    a.land_other_disbursements = float(f2.number_input("Other land disbursements", 0.0, 1e12, float(a.land_other_disbursements), 10_000.0))
+    a.legal_conveyancing = float(f1.number_input("Legal / conveyancing", 0.0, 1e12, fnum(a.legal_conveyancing, 0.0), 10_000.0))
+    a.land_other_disbursements = float(f2.number_input("Other land disbursements", 0.0, 1e12, fnum(a.land_other_disbursements, 0.0), 10_000.0))
 
     # --------- VAT ----------
     st.markdown("### VAT")
     vat = dict(a.vat or {})
     v1, v2, v3, v4, v5 = st.columns(5)
     vat["enabled"] = v1.toggle("VAT enabled", value=bool(vat.get("enabled", True)))
-    vat["vat_rate"] = v2.slider("VAT rate", 0.10, 0.20, float(vat.get("vat_rate", 0.15)), 0.005)
+    vat["vat_rate"] = v2.slider("VAT rate", 0.10, 0.20, fnum(vat.get("vat_rate"), 0.15), 0.005)
     vat["prices_include_vat"] = v3.toggle("Sale prices include VAT", value=bool(vat.get("prices_include_vat", True)))
     vat["costs_include_vat"] = v4.toggle("Costs include VAT", value=bool(vat.get("costs_include_vat", False)))
     vat["input_vat_recoverable"] = v5.toggle("Input VAT recoverable", value=bool(vat.get("input_vat_recoverable", True)))
-    vat["settlement_lag_months"] = int(st.slider("VAT settlement lag (months)", 0, 3, int(vat.get("settlement_lag_months", 1)), 1))
+    vat["settlement_lag_months"] = int(st.slider("VAT settlement lag (months)", 0, 3, int(fnum(vat.get("settlement_lag_months"), 1)), 1))
     a.vat = vat
 
     # --------- PROFIT TARGET ----------
