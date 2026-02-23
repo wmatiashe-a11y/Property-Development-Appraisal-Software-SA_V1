@@ -3,18 +3,18 @@ from __future__ import annotations
 import io
 from datetime import datetime
 
-import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import streamlit as st
 
-from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import mm
-from reportlab.lib.styles import getSampleStyleSheet
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle
 from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4
+from reportlab.lib.styles import getSampleStyleSheet
+from reportlab.lib.units import mm
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
-from core.models import Assumptions
 from core.engine import run_appraisal, sensitivity_grid
+from core.models import Assumptions
 from data.db import (
     init_db,
     list_projects,
@@ -24,9 +24,8 @@ from data.db import (
     load_appraisal,
 )
 
-
 # ----------------------------
-# Safe numeric helper (NEW)
+# Safe numeric helper
 # ----------------------------
 def fnum(v, default=0.0) -> float:
     """Coerce potentially None/''/non-numeric values to float safely."""
@@ -49,7 +48,7 @@ def money(x: float, ccy: str) -> str:
 
 
 def pct(x: float) -> str:
-    return f"{x*100:.1f}%"
+    return f"{x * 100:.1f}%"
 
 
 def fmt_audit(v, unit: str, ccy: str) -> str:
@@ -61,7 +60,7 @@ def fmt_audit(v, unit: str, ccy: str) -> str:
 
 
 # ----------------------------
-# KPI tiles
+# KPI tiles (OUTPUTS ONLY)
 # ----------------------------
 def kpis(out):
     ccy = out.currency
@@ -77,21 +76,15 @@ def kpis(out):
     b3.metric("Friction (net)", money(out.friction_net, ccy))
     b4.metric("Finance", money(out.finance_costs, ccy))
 
-    # ✅ Term debt / refi highlights
+    # Term debt / refi highlights (if present)
     c1, c2, c3 = st.columns(3)
     rm = getattr(out, "refinance_month", -1)
     tla = getattr(out, "term_loan_amount", 0.0)
     dscr = getattr(out, "term_dscr_at_refi", None)
 
-    c1.metric("Refinance month", "-" if rm is None or int(rm) < 0 else str(int(rm) + 1))  # display as 1-index
+    c1.metric("Refinance month", "-" if rm is None or int(rm) < 0 else str(int(rm) + 1))
     c2.metric("Term loan (sized)", "-" if tla is None else money(float(tla), ccy))
     c3.metric("Term DSCR @ refi", "-" if dscr is None else f"{float(dscr):.2f}x")
-    a.term_io_months = int(st.slider("Term IO months", 0, 36, int(getattr(a, "term_io_months", 0)), 1))
-    a.term_dscr_noi_basis = st.selectbox(
-        "DSCR NOI basis",
-        ["stabilised_month_annualised", "steady_state_annual"],
-        index=0 if str(getattr(a, "term_dscr_noi_basis", "stabilised_month_annualised")) != "steady_state_annual" else 1,
-)
 
 
 # ----------------------------
@@ -209,7 +202,7 @@ def build_pdf(project_name: str, project_location: str, a: Assumptions, out) -> 
     dfa = pd.DataFrame(out.audit).head(80)
     table = [["Section", "Key", "Value"]]
     for _, r in dfa.iterrows():
-        table.append([str(r["section"]), str(r["key"]), fmt_audit(r["value"], str(r.get("unit") or ""), ccy)])
+        table.append([str(r.get("section", "")), str(r.get("key", "")), fmt_audit(r.get("value", ""), str(r.get("unit") or ""), ccy)])
 
     au = Table(table, repeatRows=1, colWidths=[25 * mm, 80 * mm, 65 * mm])
     au.setStyle(
@@ -255,8 +248,8 @@ with st.sidebar:
         st.stop()
 
     labels = [f"#{p['id']} — {p['name']}" for p in projects]
-    i = st.selectbox("Select project", list(range(len(labels))), format_func=lambda k: labels[k])
-    project = projects[i]
+    proj_idx = st.selectbox("Select project", list(range(len(labels))), format_func=lambda k: labels[k])
+    project = projects[proj_idx]
     project_id = int(project["id"])
 
     st.divider()
@@ -291,9 +284,15 @@ with left:
         with st.expander(f"{idx+1}) {ph.get('name','Phase')}", expanded=(idx == 0)):
             c1, c2, c3, c4 = st.columns(4)
             ph["name"] = c1.text_input("Name", value=str(ph.get("name", "Phase")), key=f"ph_name_{idx}")
-            ph["start_month"] = int(c2.number_input("Start month (0=now)", 0, 240, int(fnum(ph.get("start_month"), 0)), key=f"ph_start_{idx}"))
-            ph["build_months"] = int(c3.number_input("Build months", 1, 120, int(fnum(ph.get("build_months"), 18)), key=f"ph_build_{idx}"))
-            ph["sales_months"] = int(c4.number_input("Sales months (sale products)", 1, 120, int(fnum(ph.get("sales_months"), 12)), key=f"ph_sales_{idx}"))
+            ph["start_month"] = int(
+                c2.number_input("Start month (0=now)", 0, 240, int(fnum(ph.get("start_month"), 0)), key=f"ph_start_{idx}")
+            )
+            ph["build_months"] = int(
+                c3.number_input("Build months", 1, 120, int(fnum(ph.get("build_months"), 18)), key=f"ph_build_{idx}")
+            )
+            ph["sales_months"] = int(
+                c4.number_input("Sales months (sale products)", 1, 120, int(fnum(ph.get("sales_months"), 12)), key=f"ph_sales_{idx}")
+            )
             ph["sales_curve"] = st.selectbox(
                 "Sales curve",
                 ["linear", "front", "back"],
@@ -349,7 +348,6 @@ with left:
                 c3.metric("Computed Net sqm", f"{net:,.0f}")
                 p["net_sqm"] = None
             else:
-                # ✅ FIX: safe default when net_sqm is None / missing
                 p["net_sqm"] = float(
                     st.number_input(
                         "Net area (m²)",
@@ -393,7 +391,9 @@ with left:
                 p["deposit_pct"] = s2.slider("Deposit %", 0.0, 0.30, fnum(p.get("deposit_pct"), 0.0), 0.01, key=f"p_dep_{i}")
                 p["deposit_released_during_build"] = s3.toggle("Deposit released during build", value=bool(p.get("deposit_released_during_build", False)), key=f"p_dep_rel_{i}")
                 p["presales_pct"] = s4.slider("Bankable presales %", 0.0, 1.0, fnum(p.get("presales_pct"), 0.0), 0.05, key=f"p_pre_{i}")
-                p["presales_achieved_month"] = int(st.number_input("Presales achieved month", 0, 240, int(fnum(p.get("presales_achieved_month"), 0)), 1, key=f"p_pre_m_{i}"))
+                p["presales_achieved_month"] = int(
+                    st.number_input("Presales achieved month", 0, 240, int(fnum(p.get("presales_achieved_month"), 0)), 1, key=f"p_pre_m_{i}")
+                )
 
                 p["ih_eligible"] = st.toggle("IH eligible (resi sale only)", value=bool(p.get("ih_eligible", p["type"] == "residential_sale")), key=f"p_ih_{i}")
 
@@ -471,7 +471,11 @@ with left:
     st.markdown("### Land + friction")
     e1, e2, e3 = st.columns(3)
     a.land_price = float(e1.number_input("Land price (as entered)", 0.0, 1e12, fnum(a.land_price, 0.0), 250_000.0))
-    a.land_treatment = e2.selectbox("Land treatment", ["transfer_duty", "vat_standard", "vat_zero"], index=["transfer_duty", "vat_standard", "vat_zero"].index(a.land_treatment))
+    a.land_treatment = e2.selectbox(
+        "Land treatment",
+        ["transfer_duty", "vat_standard", "vat_zero"],
+        index=["transfer_duty", "vat_standard", "vat_zero"].index(a.land_treatment),
+    )
     a.solve_residual_land = e3.toggle("Solve residual land to hit target", value=bool(a.solve_residual_land))
 
     f1, f2 = st.columns(2)
@@ -515,34 +519,31 @@ with left:
     a.arrangement_fee_rate = s2.slider("Arrangement fee (% peak debt)", 0.0, 0.05, float(a.arrangement_fee_rate), 0.001)
     a.exit_fee_rate = s3.slider("Exit fee (% peak debt)", 0.0, 0.05, float(a.exit_fee_rate), 0.001)
 
-    # ✅ TERM DEBT / DSCR CONTROLS (NEW)
+    # ✅ TERM DEBT / DSCR CONTROLS (FIXED INDENTATION)
     st.markdown("### Term debt / DSCR (post-stabilisation refinance)")
     t1, t2, t3, t4 = st.columns(4)
     a.enable_term_debt = t1.toggle("Enable term debt", value=bool(getattr(a, "enable_term_debt", True)))
     a.term_margin_over_prime = t2.slider("Term margin over prime", 0.0, 0.05, float(getattr(a, "term_margin_over_prime", 0.01)), 0.0025)
     a.term_amort_years = int(t3.slider("Amortisation (years)", 5, 30, int(getattr(a, "term_amort_years", 15)), 1))
     a.term_dscr_min = t4.slider("Min DSCR", 1.0, 2.0, float(getattr(a, "term_dscr_min", 1.25)), 0.05)
-    
-    # ✅ NEW: IO period + DSCR NOI basis
-    io1, io2 = st.columns([0.5, 0.5])
-    a.term_io_months = int(
-    io1.slider(
-        "Term loan IO months (interest-only after refi)",
-        0,
-        36,
-        int(getattr(a, "term_io_months", 12)),
-        1,
-    )
-)
 
-a.term_dscr_noi_basis = io2.selectbox(
-    "DSCR NOI basis",
-    ["stabilised_month_annualised", "steady_state_annual"],
-    index=0
-    if str(getattr(a, "term_dscr_noi_basis", "stabilised_month_annualised")) != "steady_state_annual"
-    else 1,
-    help="stabilised_month_annualised = stabilised monthly NOI × 12 (recommended). steady_state_annual = older method.",
-)
+    io1, io2 = st.columns(2)
+    a.term_io_months = int(
+        io1.slider(
+            "Term loan IO months (interest-only after refi)",
+            0,
+            36,
+            int(getattr(a, "term_io_months", 12)),
+            1,
+        )
+    )
+    a.term_dscr_noi_basis = io2.selectbox(
+        "DSCR NOI basis",
+        ["stabilised_month_annualised", "steady_state_annual"],
+        index=0 if str(getattr(a, "term_dscr_noi_basis", "stabilised_month_annualised")) != "steady_state_annual" else 1,
+        help="stabilised_month_annualised = stabilised monthly NOI × 12 (recommended). steady_state_annual = older method.",
+    )
+
     u1, u2, u3, u4 = st.columns(4)
     a.term_max_ltv = u1.slider("Term max LTV", 0.30, 0.80, float(getattr(a, "term_max_ltv", 0.65)), 0.01)
     a.refinance_at_stabilisation = u2.toggle("Refi at stabilisation", value=bool(getattr(a, "refinance_at_stabilisation", True)))
@@ -589,20 +590,17 @@ with right:
         df = pd.DataFrame(out.cashflow_rows)
         st.caption("Cashflow includes sale receipts, rental receipts, exit value, VAT settlement timing, constrained debt draws, and term-debt service after refi.")
 
-        # --- Revenue/Costs/VAT/Term debt service
         fig = go.Figure()
         fig.add_trace(go.Bar(x=df["Month"], y=df["Revenue (gross)"], name="Revenue (gross)"))
         fig.add_trace(go.Bar(x=df["Month"], y=-df["Costs (gross incl VAT)"], name="-Costs (gross)"))
         fig.add_trace(go.Bar(x=df["Month"], y=-df["VAT settlement (+pay / -refund)"], name="-VAT settlement"))
 
-        # ✅ New line: term debt service (cash)
         if "Debt service (term)" in df.columns:
             fig.add_trace(go.Bar(x=df["Month"], y=-df["Debt service (term)"], name="-Debt service (term)"))
 
         fig.update_layout(barmode="relative", height=320, margin=dict(l=10, r=10, t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- Debt / equity
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(x=df["Month"], y=df["Debt balance"], name="Debt balance", mode="lines"))
         fig2.add_trace(go.Bar(x=df["Month"], y=df["Debt draw"], name="Debt draw"))
@@ -628,7 +626,10 @@ with right:
 
         metric = "Residual land (net)" if a.solve_residual_land else "Profit (net)"
         st.caption(f"Sensitivity metric: **{metric}** (price axis uplifts sale prices and rents; cost axis uplifts build costs).")
-        st.dataframe(pd.DataFrame(mat, index=rows, columns=cols).applymap(lambda v: money(float(v), out.currency)), use_container_width=True)
+
+        # ✅ safer formatting (handles None/strings)
+        dfm = pd.DataFrame(mat, index=rows, columns=cols)
+        st.dataframe(dfm.applymap(lambda v: money(fnum(v, 0.0), out.currency)), use_container_width=True)
 
     with tabs[2]:
         st.caption("Save Base / Offer / Bank cases, then compare side-by-side.")
@@ -680,7 +681,6 @@ with right:
                             "Equity IRR p.a.": oo.equity_irr_pa,
                             "VAT total": oo.vat_net_payable_total,
                             "Presales gate month": oo.presales_gate_month,
-                            # ✅ term debt fields
                             "Refi month": getattr(oo, "refinance_month", -1),
                             "Term loan": getattr(oo, "term_loan_amount", 0.0),
                             "Term DSCR": getattr(oo, "term_dscr_at_refi", None),
@@ -697,7 +697,6 @@ with right:
                 show["Profit % Cost"] = show["Profit % Cost"].astype(float).map(pct)
                 show["Equity IRR p.a."] = show["Equity IRR p.a."].apply(lambda v: "-" if v is None else pct(float(v)))
 
-                # display month as 1-index or "-"
                 show["Refi month"] = show["Refi month"].apply(lambda v: "-" if v is None or int(v) < 0 else str(int(v) + 1))
                 show["Term DSCR"] = show["Term DSCR"].apply(lambda v: "-" if v is None else f"{float(v):.2f}x")
 
